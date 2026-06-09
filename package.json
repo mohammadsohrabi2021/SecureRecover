@@ -9,15 +9,30 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "next": "16.0.7",
+    "@hookform/resolvers": "^5.4.0",
+    "@prisma/client": "^6.19.3",
+    "bcryptjs": "^3.0.3",
+    "cookie": "^1.1.1",
+    "framer-motion": "^12.40.0",
+    "jose": "^6.2.3",
+    "jsonwebtoken": "^9.0.3",
+    "lucide-react": "^1.17.0",
+    "mongoose": "^9.6.3",
+    "next": "^16.0.10",
+    "nodemailer": "^8.0.10",
+    "prisma": "^6.19.3",
     "react": "19.2.0",
-    "react-dom": "19.2.0"
+    "react-dom": "19.2.0",
+    "react-hook-form": "^7.77.0",
+    "react-hot-toast": "^2.6.0",
+    "ua-parser-js": "^2.0.10",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^9",
-    "eslint-config-next": "16.0.7",
+    "eslint-config-next": "^16.0.10",
     "tailwindcss": "^4"
   }
 }

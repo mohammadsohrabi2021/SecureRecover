@@ -1,0 +1,39 @@
+// models/RecoveryCode.js
+import mongoose from "mongoose";
+
+const RecoveryCodeSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+    index: true
+  },
+  codeHash: {
+    type: String,
+    required: true
+  },
+  used: {
+    type: Boolean,
+    default: false
+  },
+  usedAt: {
+    type: Date,
+    default: null
+  },
+  expiresAt: {
+    type: Date,
+    required: true,
+    default: () => new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // 1 سال
+  }
+}, { 
+  timestamps: true 
+});
+
+// ایندکس خودکار حذف برای کدهای منقضی شده
+RecoveryCodeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+// کامپوزیت ایندکس برای جستجوی سریع
+RecoveryCodeSchema.index({ userId: 1, codeHash: 1, used: 1 });
+
+export default mongoose.models.RecoveryCode ||
+  mongoose.model("RecoveryCode", RecoveryCodeSchema);
