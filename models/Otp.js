@@ -1,5 +1,5 @@
-// models/Otp.js
-import mongoose from "mongoose";
+// models/Otp.js - اصلاح شده
+import mongoose from 'mongoose';
 
 const OtpSchema = new mongoose.Schema({
   identifier: {
@@ -9,24 +9,12 @@ const OtpSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ["email", "phone", "recovery"],
+    enum: ['login', 'device', 'recovery'],  // ✅ فقط همین سه مقدار مجاز است
     required: true
   },
   codeHash: {
     type: String,
     required: true
-  },
-  attempts: {
-    type: Number,
-    default: 0
-  },
-  maxAttempts: {
-    type: Number,
-    default: 5
-  },
-  lockedUntil: {
-    type: Date,
-    default: null
   },
   used: {
     type: Boolean,
@@ -39,14 +27,12 @@ const OtpSchema = new mongoose.Schema({
   expiresAt: {
     type: Date,
     required: true,
-    default: () => new Date(Date.now() + 5 * 60 * 1000) // 5 دقیقه
+    default: () => new Date(Date.now() + 10 * 60 * 1000)
   }
 }, {
   timestamps: true
 });
 
-// ایندکس خودکار حذف
 OtpSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-OtpSchema.index({ identifier: 1, type: 1, used: 1 });
 
-export default mongoose.models.Otp || mongoose.model("Otp", OtpSchema);
+export default mongoose.models.Otp || mongoose.model('Otp', OtpSchema);

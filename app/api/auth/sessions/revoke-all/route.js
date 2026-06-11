@@ -1,11 +1,11 @@
-// app/api/auth/sessions/[id]/route.js
+// app/api/auth/sessions/revoke-all/route.js
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { jwtVerify } from 'jose';
 import connectDB from '@/lib/mongodb';
 import Session from '@/models/Session';
 
-export async function DELETE(request, { params }) {
+export async function POST(request) {
   try {
     await connectDB();
     
@@ -19,25 +19,27 @@ export async function DELETE(request, { params }) {
     const secret = new TextEncoder().encode(process.env.JWT_SECRET);
     const { payload } = await jwtVerify(token, secret);
     
-    const { id } = await params;
-    
-    // حذف نشست فقط اگر متعلق به این کاربر باشد
-    const result = await Session.findOneAndDelete({
-      _id: id,
-      userId: payload.userId
+    // پیدا کردن نشست جاری
+    const currentSession = await Session.findOne({
+      userId: payload.userId,
+      tokenHash: payload.tokenHash,
+      isValid: true
     });
     
-    if (!result) {
-      return NextResponse.json({ error: 'نشست یافت نشد' }, { status: 404 });
-    }
+    // حذف همه نشست‌های دیگر
+    const result = await Session.deleteMany({
+      userId: payload.userId,
+      _id: { $ne: currentSession?._id }
+    });
     
     return NextResponse.json({ 
       success: true, 
-      message: 'نشست با موفقیت حذف شد' 
+      message: `${result.deletedCount} نشست حذف شد`,
+      deletedCount: result.deletedCount
     });
     
   } catch (error) {
-    console.error('Delete session error:', error);
+    console.error('Revoke all sessions error:', error);
     return NextResponse.json({ error: 'خطای داخلی سرور' }, { status: 500 });
   }
 }

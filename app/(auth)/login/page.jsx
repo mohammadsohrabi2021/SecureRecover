@@ -1,466 +1,274 @@
-// import LoginForm from "@/components/auth/LoginForm";
-
-// export default function LoginPage() {
-//   return (
-//     <div className="relative min-h-screen flex items-center justify-center bg-[#f8fafc] overflow-hidden">
-      
-//       {/* دایره‌های تزئینی پس‌زمینه برای حس مدرن بودن */}
-//       <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-50 rounded-full blur-[120px]" />
-//       <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-50 rounded-full blur-[120px]" />
-
-//       <div className="w-full max-w-120 px-6 relative z-10">
-//         <LoginForm />
-//       </div>
-//     </div>
-//   );
-// }
-// app/login/page.jsx
+// app/login/page.jsx - نسخه اصلاح شده نهایی
 'use client';
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import { motion, AnimatePresence } from "framer-motion";
-import toast from "react-hot-toast";
+import { motion } from 'framer-motion';
+import toast from 'react-hot-toast';
 import { Shield, AlertTriangle, CheckCircle } from 'lucide-react';
 import { collectDeviceInfo, getDeviceFingerprint } from '@/lib/device-fingerprint';
 
-const identifierSchema = z.object({
-  identifier: z.string().min(1, "لطفاً ایمیل یا شماره موبایل را وارد کنید"),
-});
-
-const recoverySchema = z.object({
-  identifier: z.string().min(1, "ایمیل یا موبایل الزامی است"),
-  recoveryCode: z.string().min(8, "کد بازیابی باید ۸ کاراکتر باشد"),
-});
-
 export default function LoginPage() {
   const router = useRouter();
-  const [step, setStep] = useState("identifier");
+  const [identifier, setIdentifier] = useState('');
   const [loading, setLoading] = useState(false);
-  const [deviceStatus, setDeviceStatus] = useState(null); // null = هنوز چک نشده
-  const [showDeviceModal, setShowDeviceModal] = useState(false);
-  const [tempUserId, setTempUserId] = useState(null);
-  const [tempIdentifier, setTempIdentifier] = useState("");
-
-  const {
-    register,
-    handleSubmit,
-    formState: { errors, isSubmitting },
-  } = useForm({
-    resolver: zodResolver(step === "identifier" ? identifierSchema : recoverySchema),
-  });
-
-  // ❌ حذف useEffect که از اول چک میکرد
-  // قراره فقط وقتی کاربر فرم رو زد، دستگاه چک بشه
-
-  const verifyOTP = async (userId, code, purpose) => {
-    const deviceInfo = JSON.parse(sessionStorage.getItem('deviceInfo') || '{}');
-    
-    const res = await fetch('/api/auth/verify-otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, code, deviceInfo, purpose })
-    });
-    
-    const data = await res.json();
-    
-    if (res.ok) {
-      toast.success('ورود موفقیت‌آمیز بود ✅');
-      router.push('/dashboard');
-      return true;
-    } else if (data.requiresDeviceVerification) {
-      setShowDeviceModal(true);
-      return false;
-    } else {
-      toast.error(data.error || 'خطا در تایید');
+  const [step, setStep] = useState('login');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [deviceStatus, setDeviceStatus] = useState(null);
+  const [showDeviceStatus, setShowDeviceStatus] = useState(false);
+  
+  // ❌ حذف useEffect برای checkDevice - فقط بعد از ارسال چک می‌شود
+  
+  const checkDevice = async () => {
+    try {
+      const deviceData = await collectDeviceInfo();
+      const fingerprint = getDeviceFingerprint(deviceData);
+      
+      sessionStorage.setItem('deviceFingerprint', fingerprint);
+      sessionStorage.setItem('deviceInfo', JSON.stringify({
+        ...deviceData,
+        fingerprint
+      }));
+      
+      const res = await fetch('/api/auth/check-device', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceFingerprint: fingerprint })
+      });
+      
+      const data = await res.json();
+      setDeviceStatus(data.isTrusted ? 'trusted' : 'new');
+      setShowDeviceStatus(true);
+      return data.isTrusted;
+    } catch (err) {
+      console.error(err);
+      setDeviceStatus('new');
+      setShowDeviceStatus(true);
       return false;
     }
   };
-
-  // تابع برای گرفتن اطلاعات دستگاه (فقط موقع لاگین)
-  const setupDevice = async () => {
-    const deviceData = await collectDeviceInfo();
-    const fingerprint = getDeviceFingerprint(deviceData);
-    
-    sessionStorage.setItem('deviceFingerprint', fingerprint);
-    sessionStorage.setItem('deviceInfo', JSON.stringify({
-      ...deviceData,
-      fingerprint
-    }));
-    
-    return fingerprint;
-  };
-
-  async function onSendOtp(data) {
+  
+  const handleLogin = async (e) => {
+    e.preventDefault();
     setLoading(true);
     
     try {
-      // ✅ اینجا اطلاعات دستگاه رو جمع کن (نه از اول)
-      const fingerprint = await setupDevice();
-      const identifier = data.identifier;
-      setTempIdentifier(identifier);
+      const deviceFingerprint = sessionStorage.getItem('deviceFingerprint');
+      
+      // اگر deviceFingerprint وجود نداشت، اول جمع‌آوری کن
+      if (!deviceFingerprint) {
+        const deviceData = await collectDeviceInfo();
+        const newFingerprint = getDeviceFingerprint(deviceData);
+        sessionStorage.setItem('deviceFingerprint', newFingerprint);
+        sessionStorage.setItem('deviceInfo', JSON.stringify({
+          ...deviceData,
+          fingerprint: newFingerprint
+        }));
+      }
+      
+      const finalFingerprint = sessionStorage.getItem('deviceFingerprint');
       
       const res = await fetch('/api/auth/send-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           email: identifier.includes('@') ? identifier : undefined,
           phone: !identifier.includes('@') ? identifier : undefined,
-          deviceFingerprint: fingerprint,
+          deviceFingerprint: finalFingerprint,
           purpose: 'login'
         })
       });
       
-      const result = await res.json();
+      const data = await res.json();
       
       if (res.ok) {
-        setTempUserId(result.userId);
+        sessionStorage.setItem('tempUserId', data.userId);
         
-        // ✅ اینجا وضعیت دستگاه رو بر اساس پاسخ سرور تعیین کن
-        if (result.isNewDevice) {
-          setDeviceStatus('new');
-          setShowDeviceModal(true);
-          toast.custom((t) => (
-            <div className="bg-yellow-500 text-white px-4 py-2 rounded-xl shadow-lg">
-              ⚠️ دستگاه جدید شناسایی شد. لطفاً دستگاه خود را تایید کنید.
-            </div>
-          ));
+        // ✅ بعد از موفقیت، وضعیت دستگاه رو چک کن
+        const isTrusted = await checkDevice();
+        
+        if (data.isNewDevice === true) {
+          router.push(`/verify-device?userId=${data.userId}&identifier=${encodeURIComponent(identifier)}`);
         } else {
-          setDeviceStatus('trusted');
-          const otpCode = prompt('کد تایید ۶ رقمی را وارد کنید:');
-          if (otpCode) {
-            await verifyOTP(result.userId, otpCode, 'login');
-          }
+          router.push(`/verify-otp?userId=${data.userId}&identifier=${encodeURIComponent(identifier)}&purpose=login`);
         }
       } else {
-        toast.error(result.error || 'خطا در ارسال کد');
+        // ✅ اگر کاربر وجود نداشت، هدایت به صفحه ثبت‌نام
+        if (res.status === 404 || data.error?.includes('یافت نشد')) {
+          toast.error('کاربری با این اطلاعات یافت نشد');
+          // ✅ هدایت خودکار به صفحه ثبت‌نام بعد از 1.5 ثانیه
+          setTimeout(() => {
+            router.push('/register');
+          }, 1500);
+        } else {
+          toast.error(data.error || 'خطا در ارسال کد');
+        }
       }
     } catch (err) {
-      console.error(err);
-      toast.error(err.message || 'خطا در ارتباط با سرور');
+      console.error('❌ Login error:', err);
+      toast.error('خطا در ارتباط با سرور');
     } finally {
       setLoading(false);
     }
-  }
-
-  async function onRecoveryLogin(data) {
+  };
+  
+  const handleRecoveryLogin = async (e) => {
+    e.preventDefault();
     setLoading(true);
     
     try {
-      const fingerprint = sessionStorage.getItem('deviceFingerprint');
+      let deviceFingerprint = sessionStorage.getItem('deviceFingerprint');
       
-      if (!fingerprint) {
-        toast.error('لطفاً ابتدا اطلاعات دستگاه ثبت شود');
-        setLoading(false);
-        return;
+      if (!deviceFingerprint) {
+        const deviceData = await collectDeviceInfo();
+        deviceFingerprint = getDeviceFingerprint(deviceData);
+        sessionStorage.setItem('deviceFingerprint', deviceFingerprint);
+        sessionStorage.setItem('deviceInfo', JSON.stringify({
+          ...deviceData,
+          fingerprint: deviceFingerprint
+        }));
       }
       
       const res = await fetch('/api/auth/recovery-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          identifier: data.identifier,
-          code: data.recoveryCode,
-          deviceFingerprint: fingerprint
+          identifier,
+          code: recoveryCode,
+          deviceFingerprint
         })
       });
       
-      const result = await res.json();
+      const data = await res.json();
       
       if (res.ok) {
-        toast.success('ورود با کد بازیابی موفق بود ✅');
+        toast.success('ورود با کد بازیابی موفق بود');
         router.push('/dashboard');
+      } else if (data.requiresDeviceVerification) {
+        toast.error('این دستگاه قبلاً ثبت نشده است. ابتدا دستگاه خود را تایید کنید.');
+        router.push(`/verify-device?identifier=${encodeURIComponent(identifier)}`);
+      } else if (res.status === 404 || data.error?.includes('یافت نشد')) {
+        toast.error('کاربری با این اطلاعات یافت نشد');
+        setTimeout(() => {
+          router.push('/register');
+        }, 1500);
       } else {
-        toast.error(result.error || 'کد بازیابی نامعتبر است');
+        toast.error(data.error || 'کد بازیابی نامعتبر است');
       }
     } catch (err) {
-      toast.error(err.message || 'خطا در ارتباط با سرور');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  const handleVerifyNewDevice = async () => {
-    setLoading(true);
-    
-    const deviceFingerprint = sessionStorage.getItem('deviceFingerprint');
-    
-    try {
-      const sendRes = await fetch('/api/auth/send-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: tempUserId,
-          email: tempIdentifier.includes('@') ? tempIdentifier : undefined,
-          phone: !tempIdentifier.includes('@') ? tempIdentifier : undefined,
-          deviceFingerprint,
-          purpose: 'device_verification'
-        })
-      });
-      
-      const sendData = await sendRes.json();
-      
-      if (sendRes.ok) {
-        const otpCode = prompt('کد تایید برای ثبت دستگاه جدید را وارد کنید:');
-        if (otpCode) {
-          const success = await verifyOTP(tempUserId, otpCode, 'device_verification');
-          if (success) {
-            setShowDeviceModal(false);
-            setDeviceStatus('trusted');
-          }
-        }
-      } else {
-        toast.error(sendData.error || 'خطا در ارسال کد تایید');
-      }
-    } catch (err) {
-      toast.error(err.message || 'خطا در تایید دستگاه');
+      toast.error('خطا در ارتباط با سرور');
     } finally {
       setLoading(false);
     }
   };
-
-  const handleFormSubmit = (data) => {
-    if (step === "identifier") {
-      onSendOtp(data);
-    } else {
-      onRecoveryLogin(data);
-    }
-  };
-
+  
   return (
-    <div className="relative min-h-screen flex items-center justify-center bg-[#f8fafc] overflow-hidden">
+    <div className="relative min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-800 overflow-hidden">
+      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-500/20 rounded-full blur-[120px]" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-500/20 rounded-full blur-[120px]" />
       
-      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-50 rounded-full blur-[120px]" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-50 rounded-full blur-[120px]" />
-
-      <div className="w-full max-w-120 px-6 relative z-10">
+      <div className="w-full max-w-md px-6 relative z-10">
         
-        {/* ✅ نمایش وضعیت دستگاه - فقط بعد از تلاش برای لاگین */}
-        {deviceStatus === 'new' && (
-          <motion.div 
+        {/* ✅ نمایش وضعیت دستگاه - فقط بعد از ارسال و فقط در حالت trusted */}
+        {/* حذف نمایش حالت new از این بخش - فقط trusted نمایش داده می‌شود */}
+        {showDeviceStatus && deviceStatus === 'trusted' && (
+          <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-2xl flex items-center gap-3"
+            className="mb-4 p-4 bg-green-500/10 border border-green-500/20 rounded-2xl flex items-center gap-3"
           >
-            <AlertTriangle className="w-5 h-5 text-yellow-600" />
+            <CheckCircle className="w-5 h-5 text-green-500" />
             <div>
-              <p className="text-yellow-800 text-sm font-semibold">دستگاه جدید شناسایی شد</p>
-              <p className="text-yellow-600 text-xs">برای ورود باید دستگاه خود را تایید کنید</p>
+              <p className="text-green-500 font-semibold">دستگاه قابل اعتماد</p>
+              <p className="text-green-500/80 text-xs">ورود با کد یکبار مصرف</p>
             </div>
           </motion.div>
         )}
         
-        {deviceStatus === 'trusted' && (
-          <motion.div 
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-4 p-4 bg-green-50 border border-green-200 rounded-2xl flex items-center gap-3"
-          >
-            <CheckCircle className="w-5 h-5 text-green-600" />
-            <div>
-              <p className="text-green-800 text-sm font-semibold">دستگاه قابل اعتماد</p>
-              <p className="text-green-600 text-xs">ورود با کد یکبار مصرف</p>
-            </div>
-          </motion.div>
-        )}
-
+        {/* ❌ بخش deviceStatus === 'new' حذف شد - دیگر نمایش داده نمی‌شود */}
+        
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-white/90 backdrop-blur-xl p-10 rounded-4xl shadow-[0_20px_50px_rgba(0,0,0,0.05)] border border-gray-100"
+          className="bg-white/10 backdrop-blur-xl rounded-3xl p-8 border border-white/20"
         >
-          <div className="text-center mb-10">
-            <div className="inline-flex p-3 bg-blue-50 rounded-2xl mb-4">
-              <Shield className="w-10 h-10 text-blue-600" />
+          <div className="text-center mb-8">
+            <div className="inline-flex p-3 bg-blue-500/20 rounded-2xl mb-4">
+              <Shield className="w-12 h-12 text-blue-400" />
             </div>
-            <h1 className="text-3xl font-black text-gray-900 mb-3">
-              {step === "recovery" ? "بازیابی حساب" : "خوش آمدید"}
+            <h1 className="text-3xl font-bold text-white mb-2">
+              {step === 'login' ? 'خوش آمدید' : 'بازیابی حساب'}
             </h1>
-            <p className="text-gray-500 text-sm">
-              {step === "recovery"
-                ? "برای بازیابی حساب، کد بازیابی خود را وارد کنید"
-                : "لطفاً ایمیل یا شماره موبایل خود را وارد کنید"}
+            <p className="text-gray-300 text-sm">
+              {step === 'login' 
+                ? 'لطفاً ایمیل یا شماره موبایل خود را وارد کنید'
+                : 'کد بازیابی ۸ کاراکتری خود را وارد کنید'}
             </p>
           </div>
-
-          <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6 text-right" dir="rtl">
-            <AnimatePresence mode="wait">
-              {step === "identifier" && (
-                <motion.div
-                  key="id-step"
-                  initial={{ x: -10, opacity: 0 }}
-                  animate={{ x: 0, opacity: 1 }}
-                  exit={{ x: 10, opacity: 0 }}
-                  className="space-y-2"
-                >
-                  <label className="text-sm font-bold text-gray-700 mr-1">
-                    پست الکترونیک یا شماره تماس
-                  </label>
-                  <input
-                    {...register("identifier")}
-                    placeholder="name@company.com یا 09123456789"
-                    dir="ltr"
-                    className={`w-full px-5 py-4 rounded-2xl bg-gray-50 border-2 transition-all outline-none text-left ${
-                      errors.identifier
-                        ? "border-red-200 focus:border-red-500"
-                        : "border-transparent focus:border-blue-500 focus:bg-white"
-                    }`}
-                  />
-                  {errors.identifier && (
-                    <p className="text-red-500 text-xs mt-1 mr-1">
-                      {errors.identifier.message}
-                    </p>
-                  )}
-                </motion.div>
-              )}
-
-              {step === "recovery" && (
-                <motion.div
-                  key="rec-step"
-                  initial={{ x: -10, opacity: 0 }}
-                  animate={{ x: 0, opacity: 1 }}
-                  exit={{ x: 10, opacity: 0 }}
-                  className="space-y-4"
-                >
-                  <div className="space-y-2">
-                    <label className="text-sm font-bold text-gray-700 mr-1">
-                      ایمیل یا شماره تماس
-                    </label>
-                    <input
-                      {...register("identifier")}
-                      placeholder="name@company.com یا 09123456789"
-                      dir="ltr"
-                      className="w-full px-5 py-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:border-purple-500 outline-none text-left"
-                    />
-                    {errors.identifier && (
-                      <p className="text-red-500 text-xs mt-1 mr-1">
-                        {errors.identifier.message}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-bold text-gray-700 mr-1">
-                      کد بازیابی (۸ کاراکتر)
-                    </label>
-                    <input
-                      {...register("recoveryCode")}
-                      placeholder="مثلاً: A1B2C3D4"
-                      dir="ltr"
-                      className={`w-full px-5 py-4 rounded-2xl bg-gray-50 border-2 transition-all outline-none text-center font-mono ${
-                        errors.recoveryCode
-                          ? "border-red-200 focus:border-red-500"
-                          : "border-transparent focus:border-purple-500"
-                      }`}
-                    />
-                    {errors.recoveryCode && (
-                      <p className="text-red-500 text-xs mt-1 mr-1">
-                        {errors.recoveryCode.message}
-                      </p>
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
+          
+          {step === 'login' ? (
+            <form onSubmit={handleLogin} className="space-y-5">
+              <input
+                type="text"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                placeholder="ایمیل یا شماره تماس"
+                className="w-full px-5 py-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none transition-all"
+                required
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 rounded-xl text-white font-semibold transition-all disabled:opacity-50"
+              >
+                {loading ? 'در حال ارسال کد...' : 'ارسال کد تایید'}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleRecoveryLogin} className="space-y-5">
+              <input
+                type="text"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                placeholder="ایمیل یا شماره تماس"
+                className="w-full px-5 py-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-gray-400 focus:border-purple-500 focus:outline-none"
+                required
+              />
+              <input
+                type="text"
+                value={recoveryCode}
+                onChange={(e) => setRecoveryCode(e.target.value.toUpperCase())}
+                placeholder="کد بازیابی (مثال: A1B2C3D4)"
+                className="w-full px-5 py-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-gray-400 text-center font-mono focus:border-purple-500 focus:outline-none"
+                required
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 rounded-xl text-white font-semibold transition-all disabled:opacity-50"
+              >
+                {loading ? 'در حال بررسی...' : 'بازیابی و ورود'}
+              </button>
+            </form>
+          )}
+          
+          <div className="mt-6 text-center">
             <button
-              type="submit"
-              disabled={isSubmitting || loading}
-              className={`w-full text-white font-bold py-4 rounded-2xl shadow-lg transition-all disabled:opacity-70 ${
-                step === "recovery"
-                  ? "bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800"
-                  : "bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800"
-              }`}
+              onClick={() => setStep(step === 'login' ? 'recovery' : 'login')}
+              className="text-blue-400 hover:text-blue-300 text-sm transition-colors"
             >
-              {isSubmitting || loading
-                ? "در حال پردازش..."
-                : step === "identifier"
-                ? "ارسال کد تایید"
-                : "بازیابی و ورود"}
+              {step === 'login' ? 'ورود با کد بازیابی' : 'بازگشت به ورود عادی'}
             </button>
-
-            <div className="flex flex-col items-center space-y-4 mt-8 text-sm">
-              {step === "identifier" ? (
-                <button
-                  type="button"
-                  onClick={() => setStep("recovery")}
-                  className="text-blue-600 hover:underline transition-colors"
-                >
-                  ورود با کد بازیابی
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setStep("identifier")}
-                  className="text-gray-500 hover:underline transition-colors"
-                >
-                  بازگشت به ورود عادی
-                </button>
-              )}
-
-              <p className="text-gray-500">
-                حساب کاربری ندارید؟{" "}
-                <a
-                  href="/register"
-                  className="text-blue-600 font-bold hover:underline transition-colors"
-                >
-                  ثبت‌نام رایگان
-                </a>
-              </p>
-            </div>
-          </form>
+          </div>
+          
+          <p className="mt-6 text-center text-gray-400 text-sm">
+            حساب کاربری ندارید؟{' '}
+            <a href="/register" className="text-blue-400 hover:text-blue-300 font-semibold">
+              ثبت‌نام رایگان
+            </a>
+          </p>
         </motion.div>
       </div>
-
-      {/* مودال تایید دستگاه */}
-      <AnimatePresence>
-        {showDeviceModal && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-          >
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl"
-            >
-              <div className="text-center mb-6">
-                <div className="inline-flex p-3 bg-yellow-100 rounded-2xl mb-4">
-                  <AlertTriangle className="w-10 h-10 text-yellow-600" />
-                </div>
-                <h3 className="text-2xl font-bold text-gray-900 mb-2">🔐 تایید دستگاه جدید</h3>
-                <p className="text-gray-600">
-                  دستگاهی که از آن وارد شده‌اید قبلاً ثبت نشده است.
-                </p>
-                <p className="text-gray-500 text-sm mt-2">
-                  برای امنیت حساب شما، یک کد تایید به ایمیلتان ارسال خواهد شد.
-                </p>
-              </div>
-              
-              <button
-                onClick={handleVerifyNewDevice}
-                disabled={loading}
-                className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 rounded-2xl text-white font-bold transition-all disabled:opacity-50"
-              >
-                {loading ? 'در حال ارسال...' : 'تایید دستگاه'}
-              </button>
-              
-              <button
-                onClick={() => setShowDeviceModal(false)}
-                className="w-full mt-3 py-3 text-gray-500 hover:text-gray-700 font-medium transition-colors"
-              >
-                انصراف
-              </button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }

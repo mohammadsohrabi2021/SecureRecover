@@ -1,35 +1,47 @@
 // app/api/auth/me/route.js
-import { cookies } from "next/headers";
-import { verifyToken } from "@/lib/jwt";
-import { getCurrentUserById } from "@/services/auth.service";
-import { successResponse, errorResponse } from "@/lib/utils/response";
+import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { jwtVerify } from 'jose';
+import connectDB from '@/lib/mongodb';
+import User from '@/models/User';
+import Session from '@/models/Session';
 
-export async function GET(req) {
+export async function GET() {
   try {
-    // ✅ در Next.js 15 به بعد، باید از await استفاده کنید
     const cookieStore = await cookies();
-    const token = cookieStore.get("secure_recover_session")?.value;
+    const token = cookieStore.get('secure_recover_session')?.value;
     
     if (!token) {
-      return errorResponse("احراز هویت نشده", 401);
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
-    const decoded = verifyToken(token);
+    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
+    const { payload } = await jwtVerify(token, secret);
     
-    if (!decoded || !decoded.userId) {
-      return errorResponse("توکن نامعتبر است", 401);
+    await connectDB();
+    
+    // ✅ بررسی وجود session معتبر در دیتابیس
+    const session = await Session.findOne({
+      userId: payload.userId,
+      tokenHash: payload.tokenHash,
+      isValid: true,
+      expiresAt: { $gt: new Date() }
+    });
+    
+    if (!session) {
+      return NextResponse.json({ error: 'Session expired' }, { status: 401 });
     }
     
-    const user = await getCurrentUserById(decoded.userId);
+    const user = await User.findById(payload.userId).select('-__v');
     
     if (!user) {
-      return errorResponse("کاربر یافت نشد", 404);
+      return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
     
-    return successResponse("اطلاعات کاربر", { user });
+    return NextResponse.json({ user });
     
   } catch (error) {
-    console.error("GET /api/auth/me error:", error);
-    return errorResponse(error.message || "خطا در دریافت اطلاعات کاربر", 500);
+    console.error('Me API error:', error);
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 }

@@ -1,33 +1,26 @@
-import connectDB from "@/lib/db";
-import SecurityLog from "@/models/SecurityLog";
+// services/security.service.js
+import connectDB from '@/lib/mongodb';
+import SecurityLog from '@/models/SecurityLog';
 
-export async function logSecurityEvent({
-  userId = null,
-  event,
-  status = "success",
-  request,
-  details = {},
-}) {
-  await connectDB();
-
-  const ip =
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") ||
-    "127.0.0.1";
-
-  const userAgent = request.headers.get("user-agent") || "Unknown";
-
-  return SecurityLog.create({
-    userId,
-    event,
-    status,
-    ip,
-    userAgent,
-    details,
-  });
-}
-
-export async function getUserSecurityLogs(userId) {
-  await connectDB();
-  return SecurityLog.find({ userId }).sort({ createdAt: -1 }).limit(50);
+export async function logSecurityEvent({ userId, action, status, request, details = {} }) {
+  try {
+    await connectDB();
+    
+    const ip = request?.headers?.get?.('x-forwarded-for') || 'unknown';
+    const userAgent = request?.headers?.get?.('user-agent') || 'unknown';
+    
+    const log = await SecurityLog.create({
+      userId: userId || null,
+      action,
+      status: status || 'success',
+      ip,
+      userAgent,
+      details
+    });
+    
+    return log;
+  } catch (error) {
+    console.error('Error logging security event:', error);
+    return null;
+  }
 }
