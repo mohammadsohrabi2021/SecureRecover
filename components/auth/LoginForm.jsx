@@ -1,260 +1,645 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { apiFetch } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import toast from "react-hot-toast";
+import { 
+  Mail, 
+  Phone, 
+  Shield, 
+  Key, 
+  ArrowLeft, 
+  CheckCircle,
+  Lock
+} from "lucide-react";
+import Button from "@/components/ui/Button";
+import Input from "@/components/ui/Input";
 
-// تعریف طرح‌های اعتبارسنجی برای هر مرحله
+// اسکیماهای اعتبارسنجی
 const identifierSchema = z.object({
-  identifier: z.string().min(1, "لطفاً ایمیل یا شماره موبایل را وارد کنید"),
+  identifier: z
+    .string()
+    .min(1, "لطفاً ایمیل یا شماره موبایل را وارد کنید")
+    .refine(
+      (val) => val.includes("@") || /^09[0-9]{9}$/.test(val),
+      "فرمت ایمیل یا شماره تلفن نامعتبر است"
+    )
 });
 
-// ✅ تغییر به ۶ رقم
 const otpSchema = z.object({
-  otp: z.string().length(6, "کد تایید باید ۶ رقم باشد"),
+  otp: z
+    .string()
+    .length(6, "کد تأیید باید ۶ رقم باشد")
+    .regex(/^\d+$/, "کد تأیید باید عدد باشد")
 });
 
 const recoverySchema = z.object({
-  identifier: z.string().min(1, "ایمیل یا موبایل الزامی است"),
-  recoveryCode: z.string().min(8, "کد بازیابی باید ۸ کاراکتر باشد"),
+  identifier: z
+    .string()
+    .min(1, "لطفاً ایمیل یا شماره موبایل را وارد کنید"),
+  recoveryCode: z
+    .string()
+    .length(8, "کد بازیابی باید ۸ کاراکتر باشد")
+    .regex(/^[A-Za-z0-9]+$/, "کد بازیابی باید شامل حروف و اعداد باشد")
 });
 
 export default function LoginForm() {
   const router = useRouter();
-  const [step, setStep] = useState("identifier"); // identifier | otp | recovery
-  const [userIdentifier, setUserIdentifier] = useState("");
+  const [step, setStep] = useState("identifier");
+  const [mode, setMode] = useState("normal");
   const [loading, setLoading] = useState(false);
+  const [userIdentifier, setUserIdentifier] = useState("");
+  const [verifyIdentifier, setVerifyIdentifier] = useState("");
+  const [timer, setTimer] = useState(0);
+  const [canResend, setCanResend] = useState(true);
+  const [trustLevel, setTrustLevel] = useState(null);
+  const [error, setError] = useState("");
 
-  // استفاده از React Hook Form
   const {
     register,
     handleSubmit,
-    formState: { errors, isSubmitting },
+    formState: { errors },
+    setValue,
+    watch,
+    reset,
+    getValues
   } = useForm({
+    defaultValues: {
+      identifier: "",
+      recoveryCode: "",
+      otp: ""
+    },
     resolver: zodResolver(
-      step === "identifier"
-        ? identifierSchema
-        : step === "otp"
-        ? otpSchema
-        : recoverySchema
-    ),
+      step === "identifier" ? identifierSchema :
+      step === "otp" ? otpSchema :
+      recoverySchema
+    )
   });
 
-  // ۱. مرحله ارسال OTP
-  async function onSendOtp(data) {
-    setLoading(true);
-    try {
-      const result = await apiFetch("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ identifier: data.identifier }),
-      });
+  const otpValue = watch("otp");
+  const recoveryCodeValue = watch("recoveryCode");
 
-      setUserIdentifier(data.identifier);
-      toast.success("کد تایید ۶ رقمی ارسال شد ✅");
-
-      // ✅ هدایت به صفحه تخصصی OTP با ۶ رقم
-      router.push(
-        `/verify-otp?identifier=${encodeURIComponent(data.identifier)}`
-      );
-    } catch (err) {
-      if (err.message.includes("ثبت نام نشده")) {
-        toast.error(err.message);
-      } else {
-        toast.error(err.message || "خطا در ارسال کد");
-      }
-    } finally {
-      setLoading(false);
+  // ✅ تولید یا بازیابی deviceId از localStorage
+  const getDeviceId = () => {
+    let deviceId = localStorage.getItem("deviceId");
+    if (!deviceId) {
+      const timestamp = Date.now();
+      const random = Math.random().toString(36).substring(2, 10);
+      deviceId = `${timestamp}_${random}`;
+      localStorage.setItem("deviceId", deviceId);
+      console.log("🆕 New deviceId generated:", deviceId);
+    } else {
+      console.log("♻️ Existing deviceId found:", deviceId);
     }
-  }
-
-  // ۲. مرحله تایید OTP (دیگر استفاده نمی‌شود چون به صفحه جدا هدایت می‌شود)
-  // اما برای حفظ ساختار نگه می‌داریم
-  async function onVerifyOtp(data) {
-    // این تابع دیگر استفاده نمی‌شود
-    console.log("Verify OTP called", data);
-  }
-
-  // ۳. مرحله ورود با کد بازیابی
-  async function onRecoveryLogin(data) {
-    setLoading(true);
-    try {
-      await apiFetch("/auth/recovery-login", {
-        method: "POST",
-        body: JSON.stringify({
-          identifier: data.identifier,
-          code: data.recoveryCode,
-        }),
-      });
-      toast.success("ورود با کد بازیابی موفق بود ✅");
-      router.push("/dashboard");
-    } catch (err) {
-      toast.error(err.message || "کد بازیابی نامعتبر است");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // تابع کمکی برای هندل کردن سابمیت فرم بر اساس مرحله
-  const handleFormSubmit = (data) => {
-    if (step === "identifier") onSendOtp(data);
-    else if (step === "recovery") onRecoveryLogin(data);
+    return deviceId;
   };
+
+  useEffect(() => {
+    console.log("🔄 Watch recoveryCode changed:", recoveryCodeValue);
+  }, [recoveryCodeValue]);
+
+  useEffect(() => {
+    let interval;
+    if (timer > 0) {
+      interval = setInterval(() => {
+        setTimer((prev) => prev - 1);
+      }, 1000);
+    } else {
+      setCanResend(true);
+    }
+    return () => clearInterval(interval);
+  }, [timer]);
+
+  // ارسال درخواست OTP
+  async function onSendIdentifier(data) {
+    setLoading(true);
+    setError("");
+    
+    // ✅ دریافت deviceId یکتا
+    const deviceId = getDeviceId();
+    console.log("🔑 Sending deviceId:", deviceId);
+    
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          identifier: data.identifier,
+          deviceId: deviceId // ✅ ارسال deviceId به سرور
+        })
+      });
+      
+      const result = await res.json();
+      console.log("Login response:", result);
+      
+      if (!res.ok) {
+        throw new Error(result.message || "خطا در ارسال درخواست");
+      }
+      
+      const responseData = result.data;
+      
+      if (responseData?.requiredAction === "REGISTER_FIRST") {
+        toast.error("این ایمیل یا شماره تلفن ثبت نام نشده است. لطفاً ابتدا ثبت نام کنید.");
+        setTimeout(() => router.push("/register"), 2000);
+        return;
+      }
+      
+      if (responseData?.requiredAction === "2FA") {
+        setUserIdentifier(data.identifier);
+        setTrustLevel(responseData.trustLevel);
+        
+        const correctIdentifier = responseData.identifier || data.identifier;
+        setVerifyIdentifier(correctIdentifier);
+        
+        localStorage.setItem("2faSessionId", responseData.sessionId);
+        localStorage.setItem("2faDeviceId", responseData.deviceId);
+        localStorage.setItem("2faRequiresEmail", responseData.requiresEmail);
+        localStorage.setItem("2faRequiresPhone", responseData.requiresPhone);
+        localStorage.setItem("2faIdentifier", correctIdentifier);
+        
+        if (responseData.requiresEmail && responseData.requiresPhone) {
+          toast.success("کد تأیید به ایمیل و شماره تلفن شما ارسال شد");
+        } else if (responseData.requiresEmail) {
+          toast.success("کد تأیید ۶ رقمی به ایمیل شما ارسال شد");
+        } else if (responseData.requiresPhone) {
+          toast.success("کد تأیید ۶ رقمی به شماره تلفن شما ارسال شد");
+        }
+        
+        setStep("otp");
+        setTimer(120);
+        setCanResend(false);
+        return;
+      }
+      
+      if (responseData?.requiredAction === "NONE") {
+        toast.success(responseData.message || "ورود موفق");
+        router.push("/dashboard");
+        return;
+      }
+      
+      toast.error("خطا در پردازش درخواست");
+      
+    } catch (err) {
+      console.error("Login error:", err);
+      toast.error(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // تأیید OTP
+  async function onVerifyOtp(data) {
+    setLoading(true);
+    setError("");
+    
+    try {
+      const sessionId = localStorage.getItem("2faSessionId");
+      const identifier = localStorage.getItem("2faIdentifier") || verifyIdentifier || userIdentifier;
+      
+      console.log("🔍 Verifying OTP with identifier:", identifier);
+      
+      const res = await fetch("/api/auth/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identifier: identifier,
+          code: data.otp,
+          sessionId
+        })
+      });
+      
+      const result = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(result.message || "کد اشتباه است");
+      }
+      
+      toast.success("ورود موفقیت‌آمیز بود! خوش آمدید.");
+      
+      localStorage.removeItem("2faSessionId");
+      localStorage.removeItem("2faDeviceId");
+      localStorage.removeItem("2faRequiresEmail");
+      localStorage.removeItem("2faRequiresPhone");
+      localStorage.removeItem("2faIdentifier");
+      
+      router.push("/dashboard");
+      
+    } catch (err) {
+      console.error("Verify error:", err);
+      toast.error(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ورود با کد بازیابی
+  async function onRecoveryLogin(data) {
+    console.log("=========================================");
+    console.log("🔐 RECOVERY LOGIN STARTED");
+    console.log("📝 Full form data:", data);
+    console.log("📝 Identifier from data:", data.identifier);
+    console.log("📝 Recovery code from data:", data.recoveryCode);
+    
+    const identifierFromForm = getValues("identifier");
+    const recoveryCodeFromForm = getValues("recoveryCode");
+    
+    console.log("📝 Identifier from getValues:", identifierFromForm);
+    console.log("📝 Recovery code from getValues:", recoveryCodeFromForm);
+    
+    const finalIdentifier = data.identifier || identifierFromForm;
+    const finalRecoveryCode = data.recoveryCode || recoveryCodeFromForm;
+    
+    console.log("📝 Final identifier:", finalIdentifier);
+    console.log("📝 Final recovery code:", finalRecoveryCode);
+    console.log("=========================================");
+    
+    setLoading(true);
+    setError("");
+    
+    try {
+      if (!finalRecoveryCode) {
+        console.log("❌ Recovery code is undefined or empty!");
+        throw new Error("لطفاً کد بازیابی را وارد کنید");
+      }
+      
+      const payload = {
+        identifier: finalIdentifier,
+        code: finalRecoveryCode.toUpperCase()
+      };
+      
+      console.log("📤 Sending payload:", payload);
+      
+      const res = await fetch("/api/auth/recovery-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      
+      const result = await res.json();
+      console.log("📥 Response:", result);
+      
+      if (!res.ok) {
+        throw new Error(result.message || result.error || "کد بازیابی نامعتبر است");
+      }
+      
+      toast.success("ورود با کد بازیابی موفقیت‌آمیز بود!");
+      router.push("/dashboard");
+      
+    } catch (err) {
+      console.error("❌ Recovery login error:", err);
+      toast.error(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ارسال مجدد کد
+  async function handleResend() {
+    if (!canResend) return;
+    
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          identifier: userIdentifier,
+          deviceId: getDeviceId() // ✅ ارسال deviceId هنگام ارسال مجدد
+        })
+      });
+      
+      if (res.ok) {
+        toast.success("کد جدید ارسال شد");
+        setTimer(120);
+        setCanResend(false);
+        reset({ otp: "" });
+      } else {
+        toast.error("خطا در ارسال مجدد کد");
+      }
+    } catch (error) {
+      toast.error("خطا در ارسال مجدد کد");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleBack() {
+    setStep("identifier");
+    setError("");
+    reset({ identifier: "" });
+  }
+
+  function toggleMode() {
+    console.log("🔄 Toggling mode from:", mode);
+    setMode(mode === "normal" ? "recovery" : "normal");
+    setStep("identifier");
+    setError("");
+    reset({ 
+      identifier: "", 
+      recoveryCode: "",
+      otp: "" 
+    });
+    console.log("🔄 Mode toggled to:", mode === "normal" ? "recovery" : "normal");
+  }
+
+  const getTrustLevelInfo = () => {
+    const levels = {
+      HIGH: { label: "بالا", color: "text-green-600", bg: "bg-green-100" },
+      MEDIUM: { label: "متوسط", color: "text-yellow-600", bg: "bg-yellow-100" },
+      LOW: { label: "پایین", color: "text-orange-600", bg: "bg-orange-100" },
+      CRITICAL: { label: "بحرانی", color: "text-red-600", bg: "bg-red-100" }
+    };
+    return levels[trustLevel] || levels.MEDIUM;
+  };
+
+  const isRecoveryMode = mode === "recovery";
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
+      initial={{ opacity: 0, y: 30 }}
       animate={{ opacity: 1, y: 0 }}
-      className="bg-white/90 backdrop-blur-xl p-10 rounded-4xl shadow-[0_20px_50px_rgba(0,0,0,0.05)] border border-gray-100"
+      transition={{ duration: 0.5 }}
+      className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md mx-auto border border-gray-100"
     >
-      <div className="text-center mb-10">
-        <h1 className="text-3xl font-black text-gray-900 mb-3">
-          {step === "recovery" ? "بازیابی حساب" : "خوش آمدید"}
+      {/* Header */}
+      <div className="text-center mb-8">
+        <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg ${
+          isRecoveryMode 
+            ? "bg-gradient-to-br from-amber-500 to-orange-600 shadow-amber-200" 
+            : "bg-gradient-to-br from-blue-600 to-indigo-600 shadow-blue-200"
+        }`}>
+          {isRecoveryMode ? (
+            <Key size={28} className="text-white" />
+          ) : (
+            <Shield size={28} className="text-white" />
+          )}
+        </div>
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">
+          {isRecoveryMode ? "بازیابی حساب" : "خوش آمدید"}
         </h1>
         <p className="text-gray-500 text-sm">
-          {step === "recovery"
-            ? "برای بازیابی حساب، کد بازیابی خود را وارد کنید"
-            : "لطفاً ایمیل یا شماره موبایل خود را وارد کنید"}
+          {isRecoveryMode 
+            ? "با استفاده از کد بازیابی وارد حساب خود شوید"
+            : step === "identifier" 
+              ? "لطفاً ایمیل یا شماره موبایل خود را وارد کنید"
+              : `کد ۶ رقمی به ${userIdentifier} ارسال شد`
+          }
         </p>
       </div>
 
-      <form
-        onSubmit={handleSubmit(handleFormSubmit)}
-        className="space-y-6 text-right"
-        dir="rtl"
-      >
-        <AnimatePresence mode="wait">
-          {/* بخش ورودی ایمیل/موبایل (مرحله اول) */}
-          {step === "identifier" && (
-            <motion.div
-              key="id-step"
-              initial={{ x: -10, opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: 10, opacity: 0 }}
-              className="space-y-2"
-            >
-              <label className="text-sm font-bold text-gray-700 mr-1">
-                پست الکترونیک یا شماره تماس
-              </label>
-              <input
-                {...register("identifier")}
-                placeholder="name@company.com یا 09123456789"
-                dir="ltr"
-                className={`w-full px-5 py-4 rounded-2xl bg-gray-50 border-2 transition-all outline-none text-left ${
-                  errors.identifier
-                    ? "border-red-100 focus:border-red-500"
-                    : "border-transparent focus:border-blue-500 focus:bg-white"
-                }`}
-              />
-              {errors.identifier && (
-                <p className="text-red-500 text-xs mt-1 mr-1">
-                  {errors.identifier.message}
-                </p>
-              )}
-            </motion.div>
-          )}
-
-          {/* بخش ورود با Recovery (مرحله بازیابی) */}
-          {step === "recovery" && (
-            <motion.div
-              key="rec-step"
-              initial={{ x: -10, opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: 10, opacity: 0 }}
-              className="space-y-4"
-            >
-              <div className="space-y-2">
-                <label className="text-sm font-bold text-gray-700 mr-1">
-                  ایمیل یا شماره تماس
-                </label>
-                <input
-                  {...register("identifier")}
-                  placeholder="name@company.com یا 09123456789"
-                  dir="ltr"
-                  className="w-full px-5 py-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:border-purple-500 outline-none text-left"
-                />
-                {errors.identifier && (
-                  <p className="text-red-500 text-xs mt-1 mr-1">
-                    {errors.identifier.message}
-                  </p>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-bold text-gray-700 mr-1">
-                  کد بازیابی (۸ کاراکتر)
-                </label>
-                <input
-                  {...register("recoveryCode")}
-                  placeholder="مثلاً: A1B2C3D4"
-                  dir="ltr"
-                  className={`w-full px-5 py-4 rounded-2xl bg-gray-50 border-2 transition-all outline-none text-center font-mono ${
-                    errors.recoveryCode
-                      ? "border-red-100 focus:border-red-500"
-                      : "border-transparent focus:border-purple-500"
-                  }`}
-                />
-                {errors.recoveryCode && (
-                  <p className="text-red-500 text-xs mt-1 mr-1">
-                    {errors.recoveryCode.message}
-                  </p>
-                )}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <button
-          type="submit"
-          disabled={isSubmitting || loading}
-          className={`w-full text-white font-bold py-4 rounded-2xl shadow-lg transition-all disabled:opacity-70 ${
-            step === "recovery"
-              ? "bg-purple-600 hover:bg-purple-700"
-              : "bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800"
-          }`}
+      {!isRecoveryMode && step === "otp" && trustLevel && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg mb-6 ${getTrustLevelInfo().bg}`}
         >
-          {isSubmitting || loading
-            ? "در حال پردازش..."
-            : step === "identifier"
-            ? "ارسال کد تایید"
-            : "بازیابی و ورود"}
-        </button>
+          <Shield size={16} className={getTrustLevelInfo().color} />
+          <span className={`text-sm font-medium ${getTrustLevelInfo().color}`}>
+            سطح امنیت: {getTrustLevelInfo().label}
+          </span>
+        </motion.div>
+      )}
 
-        {/* لینک‌های کمکی */}
-        <div className="flex flex-col items-center space-y-4 mt-8 text-sm">
-          {step === "identifier" ? (
-            <button
-              type="button"
-              onClick={() => setStep("recovery")}
-              className="text-blue-600 hover:underline transition-colors"
-            >
-              ورود با کد بازیابی
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setStep("identifier")}
-              className="text-gray-500 hover:underline transition-colors"
-            >
-              بازگشت به ورود عادی
-            </button>
-          )}
+      <AnimatePresence mode="wait">
+        {isRecoveryMode ? (
+          <motion.div
+            key="recovery-step"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            transition={{ duration: 0.3 }}
+          >
+            <form onSubmit={handleSubmit(onRecoveryLogin)} className="space-y-5">
+              <Input
+                {...register("identifier")}
+                label="پست الکترونیک یا شماره تماس"
+                placeholder="example@gmail.com یا 09123456789"
+                dir="ltr"
+                error={errors.identifier?.message}
+              />
 
-          <p className="text-gray-500">
-            حساب کاربری ندارید؟{" "}
-            <a
-              href="/register"
-              className="text-blue-600 font-bold hover:underline transition-colors"
-            >
-              ثبت‌نام رایگان
-            </a>
-          </p>
-        </div>
-      </form>
+              <Input
+                {...register("recoveryCode")}
+                label="کد بازیابی (۸ کاراکتر)"
+                placeholder="A1B2C3D4"
+                dir="ltr"
+                error={errors.recoveryCode?.message}
+                className="font-mono tracking-wider"
+              />
+
+              <div className="text-xs text-gray-400 text-center">
+                مقدار کد: {watch("recoveryCode") || "خالی"}
+              </div>
+
+              <Button
+                type="submit"
+                variant="primary"
+                size="lg"
+                fullWidth
+                loading={loading}
+              >
+                <span className="flex items-center justify-center gap-2">
+                  <Key size={18} />
+                  ورود با کد بازیابی
+                </span>
+              </Button>
+
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={toggleMode}
+                  className="text-sm text-blue-600 hover:text-blue-700 font-medium transition-colors"
+                >
+                  ← بازگشت به ورود عادی
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        ) : step === "identifier" ? (
+          <motion.div
+            key="identifier-step"
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            transition={{ duration: 0.3 }}
+          >
+            <form onSubmit={handleSubmit(onSendIdentifier)} className="space-y-5">
+              <div className="relative">
+                <Input
+                  {...register("identifier")}
+                  label="پست الکترونیک یا شماره تماس"
+                  placeholder="example@gmail.com یا 09123456789"
+                  dir="ltr"
+                  error={errors.identifier?.message}
+                  className="pl-12"
+                />
+                <div className="absolute left-3 top-9 text-gray-400">
+                  {watch("identifier")?.includes("@") ? (
+                    <Mail size={18} />
+                  ) : (
+                    <Phone size={18} />
+                  )}
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                variant="primary"
+                size="lg"
+                fullWidth
+                loading={loading}
+              >
+                <span className="flex items-center justify-center gap-2">
+                  ارسال کد تأیید
+                  <ArrowLeft size={18} className="rotate-180" />
+                </span>
+              </Button>
+
+              <div className="flex flex-col items-center space-y-3 mt-4 text-sm">
+                <button
+                  type="button"
+                  onClick={toggleMode}
+                  className="text-amber-600 hover:text-amber-700 font-medium transition-colors flex items-center gap-1"
+                >
+                  <Key size={14} />
+                  ورود با کد بازیابی
+                </button>
+
+                <p className="text-gray-500">
+                  حساب کاربری ندارید؟{" "}
+                  <a href="/register" className="text-blue-600 font-semibold hover:underline">
+                    ثبت‌نام رایگان
+                  </a>
+                </p>
+              </div>
+            </form>
+          </motion.div>
+        ) : (
+          <motion.div
+            key="otp-step"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            transition={{ duration: 0.3 }}
+          >
+            <form onSubmit={handleSubmit(onVerifyOtp)} className="space-y-5">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2 text-center">
+                  کد تأیید ۶ رقمی
+                </label>
+                
+                <div className="flex justify-center gap-3" dir="ltr">
+                  {[0, 1, 2, 3, 4, 5].map((index) => (
+                    <input
+                      key={index}
+                      type="text"
+                      maxLength={1}
+                      className="w-12 h-14 text-center text-2xl font-bold text-gray-800 bg-gray-50 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-100 focus:outline-none transition-all"
+                      value={otpValue?.[index] || ""}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (!/^\d*$/.test(val)) return;
+                        const newOtp = (otpValue || "").split("");
+                        newOtp[index] = val;
+                        setValue("otp", newOtp.join(""));
+                        if (val && index < 5) {
+                          document.querySelector(`input[data-index="${index + 1}"]`)?.focus();
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Backspace" && !otpValue?.[index] && index > 0) {
+                          document.querySelector(`input[data-index="${index - 1}"]`)?.focus();
+                        }
+                      }}
+                      data-index={index}
+                      autoFocus={index === 0}
+                      dir="ltr"
+                    />
+                  ))}
+                </div>
+                {errors.otp && (
+                  <p className="text-red-500 text-xs mt-2 text-center">
+                    {errors.otp.message}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between text-sm">
+                <button
+                  type="button"
+                  onClick={handleBack}
+                  className="text-gray-500 hover:text-gray-700 transition-colors flex items-center gap-1"
+                >
+                  <ArrowLeft size={14} />
+                  بازگشت
+                </button>
+                <div className="flex items-center gap-2">
+                  {timer > 0 ? (
+                    <span className="text-gray-500">
+                      ارسال مجدد در {Math.floor(timer / 60)}:{String(timer % 60).padStart(2, "0")}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleResend}
+                      disabled={!canResend || loading}
+                      className="text-blue-600 hover:text-blue-700 font-medium disabled:opacity-50 transition-colors"
+                    >
+                      ارسال مجدد کد
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                variant="primary"
+                size="lg"
+                fullWidth
+                loading={loading}
+              >
+                <span className="flex items-center justify-center gap-2">
+                  <CheckCircle size={18} />
+                  تأیید و ورود
+                </span>
+              </Button>
+
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={toggleMode}
+                  className="text-amber-600 hover:text-amber-700 font-medium transition-colors flex items-center gap-1 mx-auto text-sm"
+                >
+                  <Key size={14} />
+                  ورود با کد بازیابی
+                </button>
+              </div>
+            </form>
+
+            <div className="mt-6 p-4 bg-blue-50 rounded-xl border border-blue-100">
+              <div className="flex items-start gap-3">
+                <Lock size={16} className="text-blue-600 mt-0.5" />
+                <div>
+                  <p className="text-xs text-blue-800 font-medium">نکته امنیتی</p>
+                  <p className="text-xs text-blue-700 mt-0.5">
+                    کد تأیید در ترمینال سرور نمایش داده می‌شود. هرگز کد را با کسی به اشتراک نگذارید.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="mt-6 pt-4 border-t border-gray-100">
+        <p className="text-center text-xs text-gray-400">
+          🔐 سیستم احراز هویت هوشمند SecureRecover
+        </p>
+      </div>
     </motion.div>
   );
 }

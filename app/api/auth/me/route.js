@@ -1,47 +1,44 @@
 // app/api/auth/me/route.js
-import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { jwtVerify } from 'jose';
-import connectDB from '@/lib/mongodb';
-import User from '@/models/User';
-import Session from '@/models/Session';
+import { cookies } from "next/headers";
+import { verifyToken } from "@/lib/jwt";
+import { getCurrentUserById, validateSession } from "@/services/auth.service";
+import { successResponse, errorResponse } from "@/lib/utils/response";
 
-export async function GET() {
+export async function GET(req) {
   try {
     const cookieStore = await cookies();
-    const token = cookieStore.get('secure_recover_session')?.value;
+    const token = cookieStore.get("secure_recover_session")?.value;
     
     if (!token) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return errorResponse("احراز هویت نشده", 401);
     }
     
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-    const { payload } = await jwtVerify(token, secret);
+    const decoded = verifyToken(token);
     
-    await connectDB();
-    
-    // ✅ بررسی وجود session معتبر در دیتابیس
-    const session = await Session.findOne({
-      userId: payload.userId,
-      tokenHash: payload.tokenHash,
-      isValid: true,
-      expiresAt: { $gt: new Date() }
-    });
-    
-    if (!session) {
-      return NextResponse.json({ error: 'Session expired' }, { status: 401 });
+    if (!decoded || !decoded.userId || !decoded.sessionId) {
+      return errorResponse("توکن نامعتبر است", 401);
     }
     
-    const user = await User.findById(payload.userId).select('-__v');
+    // ✅ بررسی اعتبار سشن در دیتابیس
+    const isValidSession = await validateSession(decoded.sessionId, decoded.userId);
+    
+    if (!isValidSession) {
+      // سشن معتبر نیست - کوکی را پاک کن
+      const response = errorResponse("جلسه شما منقضی شده است", 401);
+      response.cookies.delete("secure_recover_session");
+      return response;
+    }
+    
+    const user = await getCurrentUserById(decoded.userId);
     
     if (!user) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
+      return errorResponse("کاربر یافت نشد", 404);
     }
     
-    return NextResponse.json({ user });
+    return successResponse("اطلاعات کاربر", { user });
     
   } catch (error) {
-    console.error('Me API error:', error);
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    console.error("GET /api/auth/me error:", error);
+    return errorResponse(error.message || "خطا در دریافت اطلاعات کاربر", 500);
   }
 }

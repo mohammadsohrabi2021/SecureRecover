@@ -1,10 +1,9 @@
-// models/RecoveryCode.js
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const RecoveryCodeSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: "User",
     required: true,
     index: true
   },
@@ -29,7 +28,9 @@ const RecoveryCodeSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Indexes
+RecoveryCodeSchema.index({ userId: 1, codeHash: 1, used: 1 });
 RecoveryCodeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-RecoveryCodeSchema.index({ userId: 1, used: 1 });
 
-export default mongoose.models.RecoveryCode || mongoose.model('RecoveryCode', RecoveryCodeSchema);
+export default mongoose.models.RecoveryCode ||
+  mongoose.model("RecoveryCode", RecoveryCodeSchema);

@@ -1,43 +1,60 @@
 // app/api/auth/sessions/[id]/route.js
-import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { jwtVerify } from 'jose';
-import connectDB from '@/lib/mongodb';
-import Session from '@/models/Session';
+import { cookies } from "next/headers";
+import { verifyToken } from "@/lib/jwt";
+import connectDB from "@/lib/db";
+import Session from "@/models/Session";
+import SecurityLog from "@/models/SecurityLog";
+import { successResponse, errorResponse } from "@/lib/utils/response";
 
-export async function DELETE(request, { params }) {
+export async function DELETE(req, { params }) {
   try {
-    await connectDB();
-    
     const cookieStore = await cookies();
-    const token = cookieStore.get('secure_recover_session')?.value;
+    const token = cookieStore.get("secure_recover_session")?.value;
     
     if (!token) {
-      return NextResponse.json({ error: 'احراز هویت نشده است' }, { status: 401 });
+      return errorResponse("احراز هویت نشده", 401);
     }
     
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-    const { payload } = await jwtVerify(token, secret);
+    const decoded = verifyToken(token);
+    if (!decoded || !decoded.userId) {
+      return errorResponse("توکن نامعتبر است", 401);
+    }
     
     const { id } = await params;
     
-    // حذف نشست فقط اگر متعلق به این کاربر باشد
-    const result = await Session.findOneAndDelete({
-      _id: id,
-      userId: payload.userId
+    await connectDB();
+    
+    // ✅ پیدا کردن سشن
+    const session = await Session.findOne({
+      sessionId: id,
+      userId: decoded.userId
     });
     
-    if (!result) {
-      return NextResponse.json({ error: 'نشست یافت نشد' }, { status: 404 });
+    if (!session) {
+      return errorResponse("جلسه یافت نشد", 404);
     }
     
-    return NextResponse.json({ 
-      success: true, 
-      message: 'نشست با موفقیت حذف شد' 
+    // ✅ غیرفعال کردن سشن
+    session.isValid = false;
+    await session.save();
+    
+    await SecurityLog.create({
+      userId: decoded.userId,
+      action: "SESSION_REVOKED",
+      status: "success",
+      details: { 
+        sessionId: id,
+        deviceName: session.deviceName,
+        ip: session.ip
+      }
     });
     
+    console.log(`✅ Session ${id} revoked for user ${decoded.userId}`);
+    
+    return successResponse("جلسه با موفقیت بسته شد");
+    
   } catch (error) {
-    console.error('Delete session error:', error);
-    return NextResponse.json({ error: 'خطای داخلی سرور' }, { status: 500 });
+    console.error("DELETE session error:", error);
+    return errorResponse(error.message, 500);
   }
 }

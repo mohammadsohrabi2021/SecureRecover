@@ -2,7 +2,10 @@
 
 @font-face {
   font-family: 'YekanBakh';
-  src: url('../public/fonts/YekanBakh-Bold.woff2');
+  src: url('../public/fonts/YekanBakh-Bold.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
 }
 :root {
   --background: #ffffff;

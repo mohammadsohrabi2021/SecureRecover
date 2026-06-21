@@ -1,181 +1,99 @@
-// app/api/auth/verify-otp/route.js - نسخه نهایی با مدیریت کامل duplicate
-import { NextResponse } from 'next/server';
-import { SignJWT } from 'jose';
-import { cookies } from 'next/headers';
-import crypto from 'crypto';
-import connectDB from '@/lib/mongodb';
-import User from '@/models/User';
-import Otp from '@/models/Otp';
-import TrustedDevice from '@/models/TrustedDevice';
-import Session from '@/models/Session';
+// app/api/auth/verify-otp/route.js
+import { loginWithOtp } from "@/services/auth.service";
+import { successResponse, errorResponse } from "@/lib/utils/response";
+import { createAuthCookie } from "@/lib/cookies";
+import { rateLimit } from "@/lib/rate-limit";
+import TwoFactorAuth from "@/models/TwoFactorAuth";
+import connectDB from "@/lib/db";
 
-export async function POST(request) {
+export async function POST(req) {
   try {
-    await connectDB();
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0] || "127.0.0.1";
     
-    const { userId, code, deviceInfo, purpose = 'login', loginMethod } = await request.json();
-    const ip = request.headers.get('x-forwarded-for') || 'unknown';
-    const userAgent = request.headers.get('user-agent') || 'unknown';
-    
-    const user = await User.findById(userId);
-    if (!user) {
-      return NextResponse.json({ error: 'کاربر یافت نشد' }, { status: 404 });
+    const rateLimitResult = await rateLimit(ip, "verify-otp", 5, 60);
+    if (!rateLimitResult.success) {
+      return errorResponse("تعداد تلاش‌های بیش از حد. لطفاً ۱ دقیقه دیگر تلاش کنید.", 429);
     }
     
-    const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+    const body = await req.json().catch(() => ({}));
+    console.log("Verify OTP body:", body);
     
-    // تعیین identifier درست برای جستجوی OTP
-    let identifierToSearch;
-    let typeToSearch = purpose === 'device_verification' ? 'device' : 'login';
+    let identifier = body.identifier || body.email || body.phone;
+    let code = body.code || body.otp;
+    let deviceId = body.deviceId;
+    let sessionId = body.sessionId;
     
-    if (purpose === 'device_verification') {
-      const loginMethodFromFrontend = loginMethod || deviceInfo?.loginMethod;
-      
-      if (loginMethodFromFrontend === 'email') {
-        identifierToSearch = user.phone;
-        console.log(`🔍 Searching OTP with PHONE: ${identifierToSearch}`);
-      } else {
-        identifierToSearch = user.email;
-        console.log(`🔍 Searching OTP with EMAIL: ${identifierToSearch}`);
-      }
-    } else {
-      identifierToSearch = user.email;
+    if (!identifier || !code) {
+      return errorResponse("شناسه کاربری و کد تأیید الزامی است", 400);
     }
     
-    const otp = await Otp.findOne({
-      identifier: identifierToSearch,
-      type: typeToSearch,
-      codeHash,
-      used: false,
-      expiresAt: { $gt: new Date() }
-    });
-    
-    if (!otp) {
-      console.log('❌ OTP not found');
-      return NextResponse.json({ error: 'کد نامعتبر یا منقضی شده است' }, { status: 401 });
-    }
-    
-    console.log(`✅ OTP found!`);
-    
-    otp.used = true;
-    otp.usedAt = new Date();
-    await otp.save();
-    
-    const deviceFingerprint = deviceInfo?.fingerprint;
-    
-    // ============================================
-    // ✅ مدیریت دستگاه (با حلقه برای پیدا کردن deviceId یکتا)
-    // ============================================
-    let trustedDevice = await TrustedDevice.findOne({
-      userId: user._id,
-      isActive: true
-    });
-    
-    // اگر دستگاهی برای این کاربر وجود ندارد و purpose device_verification است
-    if (!trustedDevice && purpose === 'device_verification' && deviceInfo) {
-      let newDeviceId = deviceFingerprint;
-      let counter = 1;
-      let deviceExists = true;
-      
-      // حلقه تا زمانی که deviceId یکتا پیدا کنیم
-      while (deviceExists) {
-        const existing = await TrustedDevice.findOne({ deviceId: newDeviceId });
-        if (!existing) {
-          deviceExists = false;
-        } else {
-          newDeviceId = `${deviceFingerprint}_${counter}`;
-          counter++;
+    // ✅ تشخیص type از TwoFactorAuth بر اساس sessionId
+    let type = null;
+    if (sessionId) {
+      await connectDB();
+      const twoFactorSession = await TwoFactorAuth.findOne({ sessionId });
+      if (twoFactorSession) {
+        if (twoFactorSession.phoneOtpId) {
+          type = "phone";
+          console.log("🔍 Detected type from phoneOtpId: phone");
+        } else if (twoFactorSession.emailOtpId) {
+          type = "email";
+          console.log("🔍 Detected type from emailOtpId: email");
         }
       }
-      
-      trustedDevice = await TrustedDevice.create({
-        userId: user._id,
-        deviceId: newDeviceId,
-        deviceName: deviceInfo.deviceName || 'Unknown',
-        deviceType: deviceInfo.deviceType || 'desktop',
-        browser: deviceInfo.browser || 'Unknown',
-        os: deviceInfo.os || 'Unknown',
-        lastUsedIp: ip,
-        lastUsedAt: new Date(),
-        isActive: true,
-        trustedAt: new Date()
-      });
-      console.log(`✅ New trusted device registered with unique ID: ${newDeviceId}`);
-    }
-    // اگر دستگاه وجود دارد، به‌روزرسانی کن
-    else if (trustedDevice) {
-      console.log(`✅ Device already exists for this user, updating...`);
-      trustedDevice.lastUsedAt = new Date();
-      trustedDevice.lastUsedIp = ip;
-      await trustedDevice.save();
     }
     
-    // اگر دستگاه جدید است و purpose login است → ممنوع
-    if (!trustedDevice && purpose === 'login') {
-      return NextResponse.json({
-        error: 'دستگاه جدید شناسایی شد',
-        requiresDeviceVerification: true
-      }, { status: 403 });
+    // اگر با sessionId نتونستیم تشخیص بدیم، از identifier تشخیص بده
+    if (!type) {
+      type = identifier.includes("@") ? "email" : "phone";
     }
     
-    // به‌روزرسانی آخرین لاگین کاربر
-    user.lastLoginAt = new Date();
-    user.lastLoginIp = ip;
-    user.lastLoginDevice = deviceInfo?.deviceName;
-    await user.save();
+    console.log(`🔍 Final detected type: ${type} for identifier: ${identifier}`);
     
-    // تولید JWT
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-    const sessionId = crypto.randomBytes(32).toString('hex');
-    const tokenHash = crypto.randomBytes(64).toString('hex');
+    const userAgent = req.headers.get("user-agent") || "unknown";
+    const requestMeta = { 
+      ip, 
+      userAgent, 
+      deviceId: deviceId || undefined,
+      sessionId 
+    };
     
-    const token = await new SignJWT({
-      userId: user._id.toString(),
-      email: user.email,
-      sessionId,
-      tokenHash,
-      deviceId: trustedDevice?.deviceId || 'unknown'
-    })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setExpirationTime('7d')
-      .sign(secret);
+    console.log("🔑 requestMeta.deviceId:", requestMeta.deviceId);
     
-    await Session.create({
-      userId: user._id,
-      sessionId,
-      tokenHash,
-      deviceId: trustedDevice?.deviceId || 'unknown',
-      deviceName: deviceInfo?.deviceName,
-      deviceType: deviceInfo?.deviceType,
-      browser: deviceInfo?.browser,
-      os: deviceInfo?.os,
-      userAgent,
-      ip,
-      lastActive: new Date(),
-      isValid: true,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    // ✅ ارسال type به loginWithOtp
+    const result = await loginWithOtp(identifier, code, requestMeta, type);
+    
+    if (!result || !result.user) {
+      console.error("loginWithOtp returned invalid result:", result);
+      return errorResponse("خطا در پردازش درخواست", 500);
+    }
+    
+    const { user: userData, token, isTrustedDevice, recoveryCodes } = result;
+    
+    const res = successResponse("ورود موفقیت‌آمیز بود", {
+      user: userData,
+      isTrustedDevice: isTrustedDevice || false,
+      recoveryCodes: recoveryCodes || undefined
     });
     
-    const cookieStore = await cookies();
-    cookieStore.set({
-      name: 'secure_recover_session',
-      value: token,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 7
-    });
+    res.headers.set("Set-Cookie", createAuthCookie(token));
     
-    console.log('✅ Verification successful!');
-    
-    return NextResponse.json({
-      success: true,
-      isNewDevice: purpose === 'device_verification'
-    });
+    return res;
     
   } catch (error) {
-    console.error('❌ Verify OTP error:', error);
-    return NextResponse.json({ error: 'خطای داخلی سرور' }, { status: 500 });
+    console.error("VERIFY OTP ERROR:", error);
+    
+    let status = 500;
+    let message = error.message || "خطایی رخ داده است";
+    
+    if (message.includes("نامعتبر") || message.includes("منقضی")) {
+      status = 401;
+    } else if (message.includes("قفل")) {
+      status = 423;
+    } else if (message.includes("یافت نشد")) {
+      status = 404;
+    }
+    
+    return errorResponse(message, status);
   }
 }

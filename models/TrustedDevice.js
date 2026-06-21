@@ -1,10 +1,9 @@
-// models/TrustedDevice.js
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const TrustedDeviceSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: "User",
     required: true,
     index: true
   },
@@ -15,25 +14,24 @@ const TrustedDeviceSchema = new mongoose.Schema({
   },
   deviceName: {
     type: String,
-    default: 'Unknown Device'
+    required: true
   },
   deviceType: {
     type: String,
-    enum: ['desktop', 'mobile', 'tablet'],
-    default: 'desktop'
+    enum: ["mobile", "tablet", "desktop", "unknown"],
+    default: "unknown"
   },
-  browser: {
-    type: String,
-    default: 'Unknown'
-  },
-  os: {
-    type: String,
-    default: 'Unknown'
-  },
+  browser: String,
+  os: String,
+  userAgent: String,
   lastUsedIp: String,
   lastUsedAt: {
     type: Date,
     default: Date.now
+  },
+  loginCount: {
+    type: Number,
+    default: 0
   },
   isActive: {
     type: Boolean,
@@ -50,4 +48,5 @@ const TrustedDeviceSchema = new mongoose.Schema({
 TrustedDeviceSchema.index({ userId: 1, isActive: 1 });
 TrustedDeviceSchema.index({ deviceId: 1 });
 
-export default mongoose.models.TrustedDevice || mongoose.model('TrustedDevice', TrustedDeviceSchema);
+export default mongoose.models.TrustedDevice ||
+  mongoose.model("TrustedDevice", TrustedDeviceSchema);

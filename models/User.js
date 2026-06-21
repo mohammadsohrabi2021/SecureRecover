@@ -1,26 +1,58 @@
-// models/User.js
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const UserSchema = new mongoose.Schema({
   name: {
     type: String,
-    required: [true, 'نام الزامی است'],
-    trim: true
+    required: [true, "Name is required"],
+    trim: true,
+    minlength: [2, "Name must be at least 2 characters"],
+    maxlength: [50, "Name cannot exceed 50 characters"]
   },
   email: {
     type: String,
-    required: [true, 'ایمیل الزامی است'],
+    required: [true, "Email is required"],
     unique: true,
     lowercase: true,
     trim: true,
-    index: true
+    match: [/^\S+@\S+\.\S+$/, "Please enter a valid email address"]
   },
   phone: {
     type: String,
-    required: [true, 'شماره تلفن الزامی است'],
+    required: [true, "Phone number is required"],
     unique: true,
-    trim: true,
-    index: true
+    match: [/^09[0-9]{9}$/, "Please enter a valid Iranian phone number"]
+  },
+  isEmailVerified: {
+    type: Boolean,
+    default: false
+  },
+  isPhoneVerified: {
+    type: Boolean,
+    default: false
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  isLocked: {
+    type: Boolean,
+    default: false
+  },
+  lockedUntil: {
+    type: Date,
+    default: null
+  },
+  failedLoginAttempts: {
+    type: Number,
+    default: 0
+  },
+  failedRecoveryAttempts: {
+    type: Number,
+    default: 0
+  },
+  recoveryLockUntil: {
+    type: Date,
+    default: null
   },
   lastLoginAt: {
     type: Date,
@@ -34,12 +66,19 @@ const UserSchema = new mongoose.Schema({
     type: String,
     default: null
   },
-  createdAt: {
-    type: Date,
-    default: Date.now
+  lastLoginLocation: {
+    city: String,
+    country: String,
+    lat: Number,
+    lng: Number
   }
 }, {
   timestamps: true
 });
 
-export default mongoose.models.User || mongoose.model('User', UserSchema);
+// Indexes
+UserSchema.index({ email: 1 });
+UserSchema.index({ phone: 1 });
+UserSchema.index({ isActive: 1 });
+
+export default mongoose.models.User || mongoose.model("User", UserSchema);

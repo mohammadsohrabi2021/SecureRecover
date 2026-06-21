@@ -1,45 +1,47 @@
 // app/api/auth/sessions/revoke-all/route.js
-import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { jwtVerify } from 'jose';
-import connectDB from '@/lib/mongodb';
-import Session from '@/models/Session';
+import { cookies } from "next/headers";
+import { verifyToken } from "@/lib/jwt";
+import connectDB from "@/lib/db";
+import Session from "@/models/Session";
+import SecurityLog from "@/models/SecurityLog";
+import { successResponse, errorResponse } from "@/lib/utils/response";
 
-export async function POST(request) {
+export async function POST(req) {
   try {
-    await connectDB();
-    
     const cookieStore = await cookies();
-    const token = cookieStore.get('secure_recover_session')?.value;
+    const token = cookieStore.get("secure_recover_session")?.value;
     
     if (!token) {
-      return NextResponse.json({ error: 'احراز هویت نشده است' }, { status: 401 });
+      return errorResponse("احراز هویت نشده", 401);
     }
     
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-    const { payload } = await jwtVerify(token, secret);
+    const decoded = verifyToken(token);
+    if (!decoded || !decoded.userId) {
+      return errorResponse("توکن نامعتبر است", 401);
+    }
     
-    // پیدا کردن نشست جاری
-    const currentSession = await Session.findOne({
-      userId: payload.userId,
-      tokenHash: payload.tokenHash,
-      isValid: true
+    await connectDB();
+    
+    const result = await Session.updateMany(
+      {
+        userId: decoded.userId,
+        sessionId: { $ne: decoded.sessionId },
+        isValid: true
+      },
+      { isValid: false }
+    );
+    
+    await SecurityLog.create({
+      userId: decoded.userId,
+      action: "ALL_SESSIONS_REVOKED",
+      status: "success",
+      details: { revokedCount: result.modifiedCount }
     });
     
-    // حذف همه نشست‌های دیگر
-    const result = await Session.deleteMany({
-      userId: payload.userId,
-      _id: { $ne: currentSession?._id }
-    });
-    
-    return NextResponse.json({ 
-      success: true, 
-      message: `${result.deletedCount} نشست حذف شد`,
-      deletedCount: result.deletedCount
-    });
+    return successResponse(`${result.modifiedCount} جلسه با موفقیت بسته شد`);
     
   } catch (error) {
-    console.error('Revoke all sessions error:', error);
-    return NextResponse.json({ error: 'خطای داخلی سرور' }, { status: 500 });
+    console.error("Revoke all sessions error:", error);
+    return errorResponse(error.message, 500);
   }
 }

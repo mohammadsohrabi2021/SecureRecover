@@ -1,24 +1,34 @@
-// app/api/auth/logout/route.js
-import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
+import { cookies } from "next/headers";
+import { verifyToken } from "@/lib/jwt";
+import { logout } from "@/services/auth.service";
+import { successResponse, errorResponse } from "@/lib/utils/response";
+import { clearAuthCookie } from "@/lib/cookies";
 
-// تابع کمکی برای پاسخ موفق
-function successResponse(message) {
-  return NextResponse.json({ success: true, message });
-}
-
-export async function POST() {
+export async function POST(req) {
   try {
     const cookieStore = await cookies();
-    cookieStore.delete('secure_recover_session');
+    const token = cookieStore.get("secure_recover_session")?.value;
     
-    return successResponse('با موفقیت خارج شدید');
+    if (!token) {
+      return errorResponse("احراز هویت نشده", 401);
+    }
+    
+    const decoded = verifyToken(token);
+    
+    if (decoded && decoded.sessionId) {
+      const ip = req.headers.get("x-forwarded-for")?.split(",")[0] || "127.0.0.1";
+      const userAgent = req.headers.get("user-agent") || "unknown";
+      
+      await logout(decoded.sessionId, { ip, userAgent });
+    }
+    
+    const res = successResponse("خروج موفقیت‌آمیز بود");
+    res.headers.set("Set-Cookie", clearAuthCookie());
+    
+    return res;
     
   } catch (error) {
-    console.error('Logout error:', error);
-    return NextResponse.json({ 
-      success: false, 
-      error: 'خطا در خروج از حساب' 
-    }, { status: 500 });
+    console.error("LOGOUT ERROR:", error);
+    return errorResponse(error.message || "خطا در خروج", 500);
   }
 }
