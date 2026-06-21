@@ -14,12 +14,12 @@ import {
   Key, 
   ArrowLeft, 
   CheckCircle,
-  Lock
+  Lock,
+  ArrowRight
 } from "lucide-react";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 
-// اسکیماهای اعتبارسنجی
 const identifierSchema = z.object({
   identifier: z
     .string()
@@ -83,19 +83,85 @@ export default function LoginForm() {
   const otpValue = watch("otp");
   const recoveryCodeValue = watch("recoveryCode");
 
-  // ✅ تولید یا بازیابی deviceId از localStorage
-  const getDeviceId = () => {
-    let deviceId = localStorage.getItem("deviceId");
-    if (!deviceId) {
+  const generateNewDeviceId = () => {
+    try {
+      const userAgent = navigator.userAgent || '';
+      const language = navigator.language || 'en-US';
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const screen = `${window.screen?.width || 0}x${window.screen?.height || 0}`;
+      
+      const fingerprint = `${userAgent}|${language}|${timezone}|${screen}`;
+      
+      let hash = 0;
+      for (let i = 0; i < fingerprint.length; i++) {
+        const char = fingerprint.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      
+      const hashHex = Math.abs(hash).toString(16).padStart(8, '0');
+      const timestamp = Date.now().toString(36);
+      return `${hashHex}_${timestamp.substring(timestamp.length - 6)}`;
+    } catch {
       const timestamp = Date.now();
       const random = Math.random().toString(36).substring(2, 10);
-      deviceId = `${timestamp}_${random}`;
-      localStorage.setItem("deviceId", deviceId);
-      console.log("🆕 New deviceId generated:", deviceId);
-    } else {
-      console.log("♻️ Existing deviceId found:", deviceId);
+      return `${timestamp}_${random}`;
     }
-    return deviceId;
+  };
+
+  const getDeviceId = async (identifier) => {
+    let deviceId = localStorage.getItem("deviceId");
+    
+    if (deviceId) {
+      console.log("♻️ DeviceId found in localStorage:", deviceId);
+      return deviceId;
+    }
+    
+    try {
+      console.log("🔍 Checking deviceId in database for:", identifier);
+      
+      const res = await fetch("/api/auth/check-device", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier })
+      });
+      
+      const data = await res.json();
+     
+      if (res.ok && data.deviceId) {
+        deviceId = data.deviceId;
+        localStorage.setItem("deviceId", deviceId);
+        console.log(data,'data')
+        console.log("✅ DeviceId loaded from database:", deviceId);
+        return deviceId;
+      }
+      
+      deviceId = generateNewDeviceId();
+      localStorage.setItem("deviceId", deviceId);
+      
+      await fetch("/api/auth/devices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          deviceId,
+          deviceName: "New Device",
+          deviceType: "unknown",
+          browser: navigator.userAgent?.split(" ")[0] || "Unknown",
+          os: "Unknown",
+          userAgent: navigator.userAgent || "Unknown"
+        })
+      });
+      
+      console.log("🆕 New deviceId generated and saved:", deviceId);
+      return deviceId;
+      
+    } catch (error) {
+      console.warn("⚠️ Could not fetch deviceId from database:", error);
+      deviceId = generateNewDeviceId();
+      localStorage.setItem("deviceId", deviceId);
+      console.log("🆕 New deviceId generated (fallback):", deviceId);
+      return deviceId;
+    }
   };
 
   useEffect(() => {
@@ -114,22 +180,20 @@ export default function LoginForm() {
     return () => clearInterval(interval);
   }, [timer]);
 
-  // ارسال درخواست OTP
   async function onSendIdentifier(data) {
     setLoading(true);
     setError("");
     
-    // ✅ دریافت deviceId یکتا
-    const deviceId = getDeviceId();
-    console.log("🔑 Sending deviceId:", deviceId);
-    
     try {
+      const deviceId = await getDeviceId(data.identifier);
+      console.log("🔑 Final deviceId:", deviceId);
+      
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           identifier: data.identifier,
-          deviceId: deviceId // ✅ ارسال deviceId به سرور
+          deviceId: deviceId
         })
       });
       
@@ -141,6 +205,11 @@ export default function LoginForm() {
       }
       
       const responseData = result.data;
+      
+      if (responseData.deviceId) {
+        localStorage.setItem("deviceId", responseData.deviceId);
+        console.log("✅ DeviceId saved from server:", responseData.deviceId);
+      }
       
       if (responseData?.requiredAction === "REGISTER_FIRST") {
         toast.error("این ایمیل یا شماره تلفن ثبت نام نشده است. لطفاً ابتدا ثبت نام کنید.");
@@ -191,7 +260,6 @@ export default function LoginForm() {
     }
   }
 
-  // تأیید OTP
   async function onVerifyOtp(data) {
     setLoading(true);
     setError("");
@@ -199,8 +267,10 @@ export default function LoginForm() {
     try {
       const sessionId = localStorage.getItem("2faSessionId");
       const identifier = localStorage.getItem("2faIdentifier") || verifyIdentifier || userIdentifier;
+      const deviceId = localStorage.getItem("deviceId");
       
       console.log("🔍 Verifying OTP with identifier:", identifier);
+      console.log("🔑 Verifying with deviceId:", deviceId);
       
       const res = await fetch("/api/auth/verify-otp", {
         method: "POST",
@@ -208,7 +278,8 @@ export default function LoginForm() {
         body: JSON.stringify({
           identifier: identifier,
           code: data.otp,
-          sessionId
+          sessionId: sessionId,
+          deviceId: deviceId
         })
       });
       
@@ -236,7 +307,6 @@ export default function LoginForm() {
     }
   }
 
-  // ورود با کد بازیابی
   async function onRecoveryLogin(data) {
     console.log("=========================================");
     console.log("🔐 RECOVERY LOGIN STARTED");
@@ -297,18 +367,19 @@ export default function LoginForm() {
     }
   }
 
-  // ارسال مجدد کد
   async function handleResend() {
     if (!canResend) return;
     
     setLoading(true);
     try {
+      const deviceId = await getDeviceId(userIdentifier);
+      
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           identifier: userIdentifier,
-          deviceId: getDeviceId() // ✅ ارسال deviceId هنگام ارسال مجدد
+          deviceId: deviceId
         })
       });
       
@@ -365,7 +436,6 @@ export default function LoginForm() {
       transition={{ duration: 0.5 }}
       className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md mx-auto border border-gray-100"
     >
-      {/* Header */}
       <div className="text-center mb-8">
         <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg ${
           isRecoveryMode 
@@ -441,6 +511,7 @@ export default function LoginForm() {
                 size="lg"
                 fullWidth
                 loading={loading}
+                className="cursor-pointer"
               >
                 <span className="flex items-center justify-center gap-2">
                   <Key size={18} />
@@ -452,7 +523,7 @@ export default function LoginForm() {
                 <button
                   type="button"
                   onClick={toggleMode}
-                  className="text-sm text-blue-600 hover:text-blue-700 font-medium transition-colors"
+                  className="text-sm text-blue-600 cursor-pointer hover:text-blue-700 font-medium transition-colors"
                 >
                   ← بازگشت به ورود عادی
                 </button>
@@ -477,7 +548,7 @@ export default function LoginForm() {
                   error={errors.identifier?.message}
                   className="pl-12"
                 />
-                <div className="absolute left-3 top-9 text-gray-400">
+                <div className="absolute left-3 top-11 text-gray-400">
                   {watch("identifier")?.includes("@") ? (
                     <Mail size={18} />
                   ) : (
@@ -492,10 +563,11 @@ export default function LoginForm() {
                 size="lg"
                 fullWidth
                 loading={loading}
+                className="cursor-pointer"
               >
                 <span className="flex items-center justify-center gap-2">
-                  ارسال کد تأیید
-                  <ArrowLeft size={18} className="rotate-180" />
+                  ارسال کد تایید
+                  <ArrowRight size={18} className="rotate-180" />
                 </span>
               </Button>
 
@@ -503,7 +575,7 @@ export default function LoginForm() {
                 <button
                   type="button"
                   onClick={toggleMode}
-                  className="text-amber-600 hover:text-amber-700 font-medium transition-colors flex items-center gap-1"
+                  className="text-amber-600 cursor-pointer hover:text-amber-700 font-medium transition-colors flex items-center gap-1"
                 >
                   <Key size={14} />
                   ورود با کد بازیابی
@@ -601,6 +673,7 @@ export default function LoginForm() {
                 size="lg"
                 fullWidth
                 loading={loading}
+                className="cursor-pointer"
               >
                 <span className="flex items-center justify-center gap-2">
                   <CheckCircle size={18} />
@@ -612,7 +685,7 @@ export default function LoginForm() {
                 <button
                   type="button"
                   onClick={toggleMode}
-                  className="text-amber-600 hover:text-amber-700 font-medium transition-colors flex items-center gap-1 mx-auto text-sm"
+                  className="text-amber-600 cursor-pointer hover:text-amber-700 font-medium transition-colors flex items-center gap-1 mx-auto text-sm"
                 >
                   <Key size={14} />
                   ورود با کد بازیابی

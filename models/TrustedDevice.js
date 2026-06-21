@@ -10,7 +10,7 @@ const TrustedDeviceSchema = new mongoose.Schema({
   deviceId: {
     type: String,
     required: true,
-    unique: true
+    // unique: true
   },
   deviceName: {
     type: String,

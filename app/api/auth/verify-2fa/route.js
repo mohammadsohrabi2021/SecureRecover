@@ -101,7 +101,7 @@ async function completeLogin(sessionId, deviceId, userAgent, ip, twoFactorSessio
     details: { twoFactorCompleted: true, trustScoreIncreased: true }
   });
   
-  return { token, user };
+  return { token, user, deviceId: finalDeviceId }; 
 }
 
 export async function POST(req) {
@@ -177,7 +177,8 @@ export async function POST(req) {
           phone: user.phone
         },
         isTrustedDevice: true,
-        completed: true
+        completed: true,
+        deviceId: finalDeviceId
       },
       token
     );

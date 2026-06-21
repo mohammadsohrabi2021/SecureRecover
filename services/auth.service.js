@@ -100,7 +100,6 @@ export async function loginWithOtp(identifier, inputCode, requestMeta = {}) {
   
   const sessionId = generateSessionId();
   
-  // ✅ تولید deviceId پایدار بر اساس userAgent (اگر از فرانت نیامده باشد)
   let deviceId = requestMeta.deviceId;
   if (!deviceId) {
     const fingerprint = requestMeta.userAgent || 'unknown';
@@ -109,7 +108,7 @@ export async function loginWithOtp(identifier, inputCode, requestMeta = {}) {
   }
   console.log(`🔑 Device ID used: ${deviceId}`);
   
-  // ✅ بررسی دستگاه در TrustedDevice
+  // ✅ بررسی و مدیریت دستگاه (اصلاح شده)
   let isTrustedDevice = false;
   let existingDevice = await TrustedDevice.findOne({
     userId: user._id,
@@ -125,7 +124,11 @@ export async function loginWithOtp(identifier, inputCode, requestMeta = {}) {
       isActive: true
     });
     if (existingDevice) {
-      // به‌روزرسانی deviceId با deviceId جدید
+      // ✅ deviceId تکراری را حذف کن
+      await TrustedDevice.deleteMany({
+        userId: user._id,
+        deviceId: deviceId
+      });
       existingDevice.deviceId = deviceId;
       await existingDevice.save();
       console.log(`🔄 Device ID updated for existing device: ${deviceId}`);
@@ -140,25 +143,44 @@ export async function loginWithOtp(identifier, inputCode, requestMeta = {}) {
     await existingDevice.save();
     console.log(`✅ Trusted device found (${existingDevice.loginCount} logins)`);
   } else {
-    await TrustedDevice.create({
+    // ✅ قبل از ایجاد جدید، بررسی کن که deviceId تکراری نباشد
+    const duplicateCheck = await TrustedDevice.findOne({
       userId: user._id,
-      deviceId,
-      deviceName: deviceInfo.device.model || `${deviceInfo.browser.name} on ${deviceInfo.os.name}`,
-      deviceType: deviceInfo.device.type || "desktop",
-      browser: deviceInfo.browser.name,
-      os: deviceInfo.os.name,
-      userAgent: requestMeta.userAgent,
-      lastUsedIp: requestMeta.ip,
-      loginCount: 1
+      deviceId: deviceId
     });
-    console.log(`🆕 New device registered: ${deviceId}`);
+    
+    if (duplicateCheck) {
+      // اگر deviceId تکراری است، از همان استفاده کن
+      duplicateCheck.isActive = true;
+      duplicateCheck.lastUsedAt = new Date();
+      duplicateCheck.lastUsedIp = requestMeta.ip;
+      duplicateCheck.loginCount += 1;
+      await duplicateCheck.save();
+      isTrustedDevice = true;
+      existingDevice = duplicateCheck;
+      console.log(`♻️ Using existing device with same deviceId: ${deviceId}`);
+    } else {
+      // ثبت دستگاه جدید
+      existingDevice = await TrustedDevice.create({
+        userId: user._id,
+        deviceId,
+        deviceName: deviceInfo.device.model || `${deviceInfo.browser.name} on ${deviceInfo.os.name}`,
+        deviceType: deviceInfo.device.type || "desktop",
+        browser: deviceInfo.browser.name,
+        os: deviceInfo.os.name,
+        userAgent: requestMeta.userAgent,
+        lastUsedIp: requestMeta.ip,
+        loginCount: 1
+      });
+      console.log(`🆕 New device registered: ${deviceId}`);
+    }
   }
   
-  // ✅ ایجاد session با deviceId یکسان
+  // ✅ ادامه کد (ایجاد session و ...)
   const session = await Session.create({
     userId: user._id,
     sessionId,
-    deviceId: deviceId, // ✅ از deviceId یکسان استفاده کن
+    deviceId: deviceId,
     deviceName: deviceInfo.device.model || `${deviceInfo.browser.name} on ${deviceInfo.os.name}`,
     deviceType: deviceInfo.device.type || "desktop",
     browser: deviceInfo.browser.name || "Unknown",
@@ -200,7 +222,6 @@ export async function loginWithOtp(identifier, inputCode, requestMeta = {}) {
     recoveryCodes = await generateUserRecoveryCodes(user._id, requestMeta);
   }
   
-  // ✅ ارسال isTrustedDevice به updateTrustScore
   await trustScoreService.updateTrustScore(user._id, {
     isSuccessful: true,
     usedOTP: true,

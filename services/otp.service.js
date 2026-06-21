@@ -9,6 +9,7 @@ import Otp from "@/models/Otp";
 import { hashValue, compareValue } from "@/lib/hash";
 import { UAParser } from "ua-parser-js";
 import SecurityLog from "@/models/SecurityLog";
+
 class TwoFactorService {
   
   // شروع فرآیند تأیید دو مرحله‌ای با مراحل مشخص
@@ -129,7 +130,7 @@ class TwoFactorService {
     return { success: true, rawCode };
   }
   
-  // ========== تأیید کد ایمیل (اصلاح شده) ==========
+  // تأیید کد ایمیل
   async verifyEmailCode(sessionId, code, requestMeta = {}) {
     await connectDB();
     
@@ -165,10 +166,8 @@ class TwoFactorService {
     
     twoFactorSession.steps.emailVerified = true;
     
-    // ✅ بررسی: آیا مرحله تلفن required بود؟
     const requiresPhone = twoFactorSession.phoneOtpId !== null && twoFactorSession.phoneOtpId !== undefined;
     
-    // ✅ اگر مرحله تلفن required نیست یا قبلاً verified شده، فرآیند کامل است
     if (!requiresPhone || twoFactorSession.steps.phoneVerified) {
       twoFactorSession.status = "completed";
       console.log("✅ Single step (email only) completed!");
@@ -179,7 +178,6 @@ class TwoFactorService {
     
     await twoFactorSession.save();
     
-    // تعیین nextStep فقط اگر مرحله بعد وجود داشته باشد
     let nextStep = null;
     if (twoFactorSession.status === "partial" && requiresPhone && !twoFactorSession.steps.phoneVerified) {
       nextStep = "phone";
@@ -194,7 +192,7 @@ class TwoFactorService {
     };
   }
   
-  // ========== تأیید کد تلفن (اصلاح شده) ==========
+  // تأیید کد تلفن
   async verifyPhoneCode(sessionId, code, requestMeta = {}) {
     await connectDB();
     
@@ -230,10 +228,8 @@ class TwoFactorService {
     
     twoFactorSession.steps.phoneVerified = true;
     
-    // ✅ بررسی: آیا مرحله ایمیل required بود؟
     const requiresEmail = twoFactorSession.emailOtpId !== null && twoFactorSession.emailOtpId !== undefined;
     
-    // ✅ اگر مرحله ایمیل required نیست یا قبلاً verified شده، فرآیند کامل است
     if (!requiresEmail || twoFactorSession.steps.emailVerified) {
       twoFactorSession.status = "completed";
       console.log("✅ Single step (phone only) completed!");
@@ -327,6 +323,8 @@ class TwoFactorService {
     return "✅ تأیید هویت کامل شد";
   }
 }
+
+
 export async function verifyOtp(identifier, type, inputCode, requestMeta = {}) {
   await connectDB();
   

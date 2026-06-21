@@ -199,6 +199,7 @@ export async function POST(req) {
             name: user.name,
             email: user.email
           },
+          deviceId: deviceId,
           message: "✅ سطح اعتماد بالا - ورود بدون نیاز به کد تأیید"
         },
         token

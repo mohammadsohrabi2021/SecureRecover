@@ -62,7 +62,8 @@ export default function RegisterForm() {
         <Input
           {...register("name")}
           label="نام کامل"
-          placeholder="محمد رضایی"
+          placeholder="محمد سهرابی"
+          dir='rtl'
           error={errors.name?.message}
         />
         
@@ -83,7 +84,7 @@ export default function RegisterForm() {
           error={errors.phone?.message}
         />
         
-        <Button type="submit" variant="primary" size="lg" fullWidth loading={loading}>
+        <Button type="submit" variant="primary" size="lg" className="cursor-pointer" fullWidth loading={loading}>
           ثبت نام
         </Button>
         

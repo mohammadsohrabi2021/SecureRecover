@@ -16,6 +16,7 @@ const SecurityLogSchema = new mongoose.Schema({
       "OTP_SENT",
       "OTP_VERIFIED",
       "OTP_FAILED",
+      "OTP_MAX_ATTEMPTS",
       "RECOVERY_CODES_GENERATED",
       "RECOVERY_CODE_USED",
       "RECOVERY_FAILED",
