@@ -268,10 +268,12 @@ export async function getCurrentUserById(userId) {
     name: user.name,
     email: user.email,
     phone: user.phone,
+    role: user.role || (user.isAdmin ? "admin" : "user"),
+    isAdmin: user.isAdmin || user.role === "admin" || user.role === "super_admin",
     isEmailVerified: user.isEmailVerified,
     isPhoneVerified: user.isPhoneVerified,
     lastLoginAt: user.lastLoginAt,
-    createdAt: user.createdAt
+    createdAt: user.createdAt,
   };
 }
 

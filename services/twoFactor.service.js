@@ -1,332 +1,247 @@
-// services/twoFactor.service.js
 import connectDB from "@/lib/db";
 import TwoFactorAuth from "@/models/TwoFactorAuth";
 import User from "@/models/User";
 import TrustedDevice from "@/models/TrustedDevice";
-import { generateSecureCode } from "@/lib/hash";
-import { sendEmailOtp, sendSmsOtp } from "./mail.service";
 import Otp from "@/models/Otp";
-import { hashValue, compareValue } from "@/lib/hash";
-import { UAParser } from "ua-parser-js";
 import SecurityLog from "@/models/SecurityLog";
+import { generateSecureCode } from "@/lib/hash";
+import { hashValue, compareValue } from "@/lib/hash";
+import { sendEmailOtp, sendSmsOtp } from "./mail.service";
+import { UAParser } from "ua-parser-js";
+import crypto from "crypto";
 
 class TwoFactorService {
-  
-  // شروع فرآیند تأیید دو مرحله‌ای با مراحل مشخص
-  async initiate2FAWithSteps(userId, deviceId, requiredSteps, requestMeta = {}) {
+  async initiate2FA(userId, deviceId, options = {}, requestMeta = {}) {
     await connectDB();
-    
-    const sessionId = `${userId}_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-    
-    const twoFactorSession = await TwoFactorAuth.create({
+
+    const { sendToEmail = true, sendToPhone = false, requiresRecoveryCode = false, canRequestAdminApproval = false, trustLevel = "MEDIUM" } = options;
+    const allowsAdminApproval = canRequestAdminApproval || trustLevel === "LOW";
+
+    const sessionId = crypto.randomBytes(24).toString("hex");
+
+    await TwoFactorAuth.create({
       userId,
       sessionId,
       deviceId,
-      steps: {
-        emailVerified: false,
-        phoneVerified: false
-      },
+      steps: { emailVerified: false, phoneVerified: false, recoveryVerified: false },
+      requiresRecoveryCode,
+      canRequestAdminApproval: allowsAdminApproval,
+      trustLevel,
       status: "pending",
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
       ip: requestMeta.ip,
       userAgent: requestMeta.userAgent,
-      location: requestMeta.location
+      location: requestMeta.location,
     });
-    
+
     const user = await User.findById(userId);
-    
-    console.log("\n╔═══════════════════════════════════════════════════════════════╗");
-    console.log("║              🔐 2FA PROCESS STARTED 🔐                         ║");
-    console.log("╠═══════════════════════════════════════════════════════════════╣");
-    console.log(`║ 👤 User: ${user.email}`);
-    console.log(`║ 📧 Send to Email: ${requiredSteps.email ? "YES ✅" : "NO ❌"}`);
-    console.log(`║ 📱 Send to Phone: ${requiredSteps.phone ? "YES ✅" : "NO ❌"}`);
-    console.log("╚═══════════════════════════════════════════════════════════════╝\n");
-    
-    if (requiredSteps.email && user.email) {
+
+    if (sendToEmail && user?.email) {
       await this.sendEmailCode(user.email, sessionId);
     }
-    
-    if (requiredSteps.phone && user.phone) {
+
+    if (sendToPhone && user?.phone) {
       await this.sendPhoneCode(user.phone, sessionId);
     }
-    
+
     return {
       sessionId,
-      requiresEmail: requiredSteps.email,
-      requiresPhone: requiredSteps.phone
+      requiresEmail: sendToEmail,
+      requiresPhone: sendToPhone,
+      requiresRecoveryCode,
+      canRequestAdminApproval,
+      allowsAdminApproval,
     };
   }
-  
-  // ارسال کد به ایمیل
+
   async sendEmailCode(email, sessionId) {
     const rawCode = generateSecureCode(6, "number");
     const hashedCode = await hashValue(rawCode);
-    
-    console.log("\n╔════════════════════════════════════════════════════════════════╗");
-    console.log("║                 📧 2FA EMAIL CODE 📧                             ║");
-    console.log("╠════════════════════════════════════════════════════════════════╣");
-    console.log(`║ 📧 Email: ${email}`);
-    console.log(`║ 🔐 CODE: ${rawCode}`);
-    console.log(`║ 🔐 HASH: ${hashedCode}`);
-    console.log(`║ ⏰ Expires: 5 minutes`);
-    console.log("╚════════════════════════════════════════════════════════════════╝\n");
-    
+
+    if (process.env.NODE_ENV === "development") {
+      console.log(`[DEV] OTP email ${email}: ${rawCode}`);
+    }
+
     const otp = await Otp.create({
-      identifier: email,
+      identifier: email.toLowerCase(),
       type: "email",
       codeHash: hashedCode,
       attempts: 0,
       maxAttempts: 5,
-      expiresAt: new Date(Date.now() + 5 * 60 * 1000)
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
     });
-    
-    await TwoFactorAuth.updateOne(
-      { sessionId },
-      { emailOtpId: otp._id }
-    );
-    
-    if (process.env.NODE_ENV === "development") {
-      console.log(`📧 [DEV MODE] کد ${rawCode} به ایمیل ${email} ارسال شد`);
-    } else {
+
+    await TwoFactorAuth.updateOne({ sessionId }, { emailOtpId: otp._id });
+
+    if (process.env.NODE_ENV !== "development") {
       await sendEmailOtp(email, rawCode);
     }
-    
-    return { success: true, rawCode };
+
+    return { success: true };
   }
-  
-  // ارسال کد به تلفن
+
   async sendPhoneCode(phone, sessionId) {
     const rawCode = generateSecureCode(6, "number");
     const hashedCode = await hashValue(rawCode);
-    
-    console.log("\n╔════════════════════════════════════════════════════════════════╗");
-    console.log("║                 📱 2FA PHONE CODE 📱                             ║");
-    console.log("╠════════════════════════════════════════════════════════════════╣");
-    console.log(`║ 📞 Phone: ${phone}`);
-    console.log(`║ 🔐 CODE: ${rawCode}`);
-    console.log(`║ 🔐 HASH: ${hashedCode}`);
-    console.log(`║ ⏰ Expires: 5 minutes`);
-    console.log("╚════════════════════════════════════════════════════════════════╝\n");
-    
+
+    if (process.env.NODE_ENV === "development") {
+      console.log(`[DEV] OTP phone ${phone}: ${rawCode}`);
+    }
+
     const otp = await Otp.create({
       identifier: phone,
       type: "phone",
       codeHash: hashedCode,
       attempts: 0,
       maxAttempts: 5,
-      expiresAt: new Date(Date.now() + 5 * 60 * 1000)
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
     });
-    
-    await TwoFactorAuth.updateOne(
-      { sessionId },
-      { phoneOtpId: otp._id }
-    );
-    
-    if (process.env.NODE_ENV === "development") {
-      console.log(`📱 [DEV MODE] کد ${rawCode} به شماره ${phone} ارسال شد`);
-    } else {
+
+    await TwoFactorAuth.updateOne({ sessionId }, { phoneOtpId: otp._id });
+
+    if (process.env.NODE_ENV !== "development") {
       await sendSmsOtp(phone, rawCode);
     }
-    
-    return { success: true, rawCode };
+
+    return { success: true };
   }
-  
-  // ========== تأیید کد ایمیل ==========
-  async verifyEmailCode(sessionId, code, requestMeta = {}) {
+
+  async verifyOtpForSession(sessionId, code, type, requestMeta = {}) {
     await connectDB();
-    
-    console.log("=== VERIFY EMAIL CODE ===");
-    console.log("sessionId:", sessionId);
-    console.log("input code:", code);
-    
-    const twoFactorSession = await TwoFactorAuth.findOne({ sessionId });
-    if (!twoFactorSession) {
-      throw new Error("جلسه تأیید معتبر نیست");
+
+    const session = await TwoFactorAuth.findOne({ sessionId });
+    if (!session) throw new Error("جلسه تأیید معتبر نیست");
+    if (session.expiresAt < new Date()) throw new Error("زمان جلسه تأیید به پایان رسیده است");
+
+    const otpId = type === "email" ? session.emailOtpId : session.phoneOtpId;
+    if (!otpId) throw new Error("کد تأیید برای این مرحله ارسال نشده است");
+
+    const otp = await Otp.findById(otpId);
+    if (!otp || otp.used) throw new Error("کد منقضی شده یا نامعتبر است");
+
+    if (otp.lockedUntil && otp.lockedUntil > new Date()) {
+      const secs = Math.ceil((otp.lockedUntil - new Date()) / 1000);
+      throw new Error(`لطفاً ${secs} ثانیه بعد تلاش کنید`);
     }
-    
-    if (twoFactorSession.status === "completed") {
-      throw new Error("تأیید قبلاً کامل شده است");
-    }
-    
-    if (twoFactorSession.expiresAt < new Date()) {
-      throw new Error("زمان جلسه تأیید به پایان رسیده است");
-    }
-    
-    const otp = await Otp.findById(twoFactorSession.emailOtpId);
-    if (!otp || otp.used) {
-      throw new Error("کد معتبر نیست");
-    }
-    
+
+    otp.attempts += 1;
     const isValid = await compareValue(code, otp.codeHash);
+
     if (!isValid) {
-      throw new Error("کد اشتباه است");
+      if (otp.attempts >= otp.maxAttempts) {
+        otp.lockedUntil = new Date(Date.now() + 15 * 60 * 1000);
+        await SecurityLog.create({
+          userId: session.userId,
+          action: "OTP_MAX_ATTEMPTS",
+          status: "failed",
+          ip: requestMeta.ip,
+          userAgent: requestMeta.userAgent,
+          details: { sessionId, type },
+        });
+      }
+      await otp.save();
+      throw new Error(`کد نامعتبر (${otp.maxAttempts - otp.attempts} تلاش باقی‌مانده)`);
     }
-    
+
     otp.used = true;
+    otp.usedAt = new Date();
     await otp.save();
-    
-    twoFactorSession.steps.emailVerified = true;
-    
-    const requiresPhone = twoFactorSession.phoneOtpId !== null && twoFactorSession.phoneOtpId !== undefined;
-    
-    if (!requiresPhone || twoFactorSession.steps.phoneVerified) {
-      twoFactorSession.status = "completed";
-      console.log("✅ Single step (email only) completed!");
+
+    if (type === "email") session.steps.emailVerified = true;
+    if (type === "phone") session.steps.phoneVerified = true;
+
+    const needsBoth =
+      session.emailOtpId &&
+      session.phoneOtpId &&
+      !(session.steps.emailVerified && session.steps.phoneVerified);
+
+    if (needsBoth) {
+      session.status = "partial";
+    } else if (session.requiresRecoveryCode) {
+      session.status = "partial";
+    } else if (session.canRequestAdminApproval) {
+      session.status = "partial";
     } else {
-      twoFactorSession.status = "partial";
-      console.log("⏳ Email verified, waiting for phone...");
+      session.status = "completed";
+      await this.markDeviceAsTrusted(session.userId, session.deviceId, requestMeta);
     }
-    
-    await twoFactorSession.save();
-    
+
+    await session.save();
+
+    await SecurityLog.create({
+      userId: session.userId,
+      action: "OTP_VERIFIED",
+      status: "success",
+      ip: requestMeta.ip,
+      userAgent: requestMeta.userAgent,
+      deviceId: session.deviceId,
+      details: { type, sessionId },
+    });
+
     let nextStep = null;
-    if (twoFactorSession.status === "partial" && requiresPhone && !twoFactorSession.steps.phoneVerified) {
-      nextStep = "phone";
+    if (session.status === "partial") {
+      if (session.emailOtpId && !session.steps.emailVerified) nextStep = "email";
+      else if (session.phoneOtpId && !session.steps.phoneVerified) nextStep = "phone";
+      else if (session.requiresRecoveryCode && !session.steps.recoveryVerified) nextStep = "recovery";
+      else if (session.canRequestAdminApproval) nextStep = "admin-approval";
     }
-    
-    console.log("✅ Email verification result:", { completed: twoFactorSession.status === "completed", nextStep });
-    
+
     return {
       success: true,
-      completed: twoFactorSession.status === "completed",
-      nextStep: nextStep
+      completed: session.status === "completed",
+      requiresRecoveryCode: session.requiresRecoveryCode && !session.steps.recoveryVerified,
+      canRequestAdminApproval: session.canRequestAdminApproval && session.status === "partial" && nextStep === "admin-approval",
+      nextStep,
+      userId: session.userId,
+      deviceId: session.deviceId,
+      trustLevel: session.trustLevel,
     };
   }
-  
-  // ========== تأیید کد تلفن ==========
-  async verifyPhoneCode(sessionId, code, requestMeta = {}) {
+
+  async markRecoveryVerified(sessionId) {
     await connectDB();
-    
-    console.log("=== VERIFY PHONE CODE ===");
-    console.log("sessionId:", sessionId);
-    console.log("input code:", code);
-    
-    const twoFactorSession = await TwoFactorAuth.findOne({ sessionId });
-    if (!twoFactorSession) {
-      throw new Error("جلسه تأیید معتبر نیست");
-    }
-    
-    if (twoFactorSession.status === "completed") {
-      throw new Error("تأیید قبلاً کامل شده است");
-    }
-    
-    if (twoFactorSession.expiresAt < new Date()) {
-      throw new Error("زمان جلسه تأیید به پایان رسیده است");
-    }
-    
-    const otp = await Otp.findById(twoFactorSession.phoneOtpId);
-    if (!otp || otp.used) {
-      throw new Error("کد معتبر نیست");
-    }
-    
-    const isValid = await compareValue(code, otp.codeHash);
-    if (!isValid) {
-      throw new Error("کد اشتباه است");
-    }
-    
-    otp.used = true;
-    await otp.save();
-    
-    twoFactorSession.steps.phoneVerified = true;
-    
-    const requiresEmail = twoFactorSession.emailOtpId !== null && twoFactorSession.emailOtpId !== undefined;
-    
-    if (!requiresEmail || twoFactorSession.steps.emailVerified) {
-      twoFactorSession.status = "completed";
-      console.log("✅ Single step (phone only) completed!");
-    } else {
-      twoFactorSession.status = "partial";
-      console.log("⏳ Phone verified, waiting for email...");
-    }
-    
-    await twoFactorSession.save();
-    
-    let nextStep = null;
-    if (twoFactorSession.status === "partial" && requiresEmail && !twoFactorSession.steps.emailVerified) {
-      nextStep = "email";
-    }
-    
-    if (twoFactorSession.status === "completed") {
-      await this.markDeviceAsTrusted(twoFactorSession.userId, twoFactorSession.deviceId, requestMeta);
-    }
-    
-    console.log("✅ Phone verification result:", { completed: twoFactorSession.status === "completed", nextStep });
-    
-    return {
-      success: true,
-      completed: twoFactorSession.status === "completed",
-      nextStep: nextStep
-    };
+    const session = await TwoFactorAuth.findOne({ sessionId });
+    if (!session) throw new Error("جلسه معتبر نیست");
+
+    session.steps.recoveryVerified = true;
+    session.status = "completed";
+    await session.save();
+    return session;
   }
-  
-  // دریافت جلسه 2FA
+
   async get2FASession(sessionId) {
     await connectDB();
-    return await TwoFactorAuth.findOne({ sessionId });
+    return TwoFactorAuth.findOne({ sessionId });
   }
-  
-  // ثبت دستگاه به عنوان قابل اعتماد
+
   async markDeviceAsTrusted(userId, deviceId, requestMeta = {}) {
     await connectDB();
-    
-    let trustedDevice = await TrustedDevice.findOne({ userId, deviceId });
-    
-    if (trustedDevice) {
-      trustedDevice.lastUsedAt = new Date();
-      trustedDevice.lastUsedIp = requestMeta.ip;
-      trustedDevice.loginCount += 1;
-      await trustedDevice.save();
-      console.log("✅ Device marked as trusted (existing):", deviceId);
+
+    let device = await TrustedDevice.findOne({ userId, deviceId });
+
+    if (device) {
+      device.lastUsedAt = new Date();
+      device.lastUsedIp = requestMeta.ip;
+      device.loginCount += 1;
+      device.isActive = true;
+      await device.save();
     } else {
       const parser = new UAParser(requestMeta.userAgent || "");
-      const deviceInfo = parser.getResult();
-      
+      const info = parser.getResult();
+
       await TrustedDevice.create({
         userId,
         deviceId,
-        deviceName: deviceInfo.device.model || `${deviceInfo.browser.name || "Unknown"} on ${deviceInfo.os.name || "Unknown"}`,
-        deviceType: deviceInfo.device.type || "desktop",
-        browser: deviceInfo.browser.name || "Unknown",
-        os: deviceInfo.os.name || "Unknown",
+        deviceName: info.device.model || `${info.browser.name || "Browser"} on ${info.os.name || "OS"}`,
+        deviceType: info.device.type || "desktop",
+        browser: info.browser.name || "Unknown",
+        os: info.os.name || "Unknown",
         userAgent: requestMeta.userAgent,
         lastUsedIp: requestMeta.ip,
-        loginCount: 1
+        loginCount: 1,
       });
-      console.log("✅ New device marked as trusted:", deviceId);
     }
-    
-    return true;
-  }
-  
-  // بررسی وضعیت جلسه 2FA
-  async get2FAStatus(sessionId) {
-    const twoFactorSession = await TwoFactorAuth.findOne({ sessionId });
-    if (!twoFactorSession) return null;
-    
-    return {
-      sessionId: twoFactorSession.sessionId,
-      emailVerified: twoFactorSession.steps.emailVerified,
-      phoneVerified: twoFactorSession.steps.phoneVerified,
-      isCompleted: twoFactorSession.status === "completed",
-      expiresAt: twoFactorSession.expiresAt
-    };
-  }
-  
-  // دریافت پیام مرحله
-  getStepMessage(requiredSteps) {
-    if (requiredSteps.email && requiredSteps.phone) {
-      return "🔐 برای امنیت بیشتر، لطفاً کد تأیید ارسال شده به ایمیل و شماره تلفن خود را وارد کنید";
-    } else if (requiredSteps.email) {
-      return "📧 کد تأیید به ایمیل شما ارسال شد";
-    } else if (requiredSteps.phone) {
-      return "📱 کد تأیید به شماره تلفن شما ارسال شد";
-    }
-    return "✅ تأیید هویت کامل شد";
   }
 }
-
-// ❌ حذف تابع اضافی verifyOtp از اینجا
-// export async function verifyOtp(...) { ... }  ← این را حذف کنید
 
 export default new TwoFactorService();

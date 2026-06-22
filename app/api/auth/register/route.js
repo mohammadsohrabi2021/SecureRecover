@@ -2,6 +2,7 @@ import { registerSchema } from "@/lib/utils/validators";
 import { registerUser } from "@/services/auth.service";
 import { successResponse, errorResponse } from "@/lib/utils/response";
 import { rateLimit } from "@/lib/rate-limit";
+import { makeFirstUserAdmin } from "@/services/admin.service";
 
 export async function POST(req) {
   try {
@@ -31,7 +32,7 @@ export async function POST(req) {
     const requestMeta = { ip, userAgent };
     
     const user = await registerUser(validation.data, requestMeta);
-    
+    await makeFirstUserAdmin();
     return successResponse("ثبت نام با موفقیت انجام شد", { 
       user,
       redirectTo: "/login"
