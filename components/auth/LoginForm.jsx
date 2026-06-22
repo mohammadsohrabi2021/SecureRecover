@@ -21,15 +21,13 @@ import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { useAuth } from "@/contexts/AuthProvider";
 import { useDeviceId } from "@/hooks/useDeviceId";
+import {
+  identifierSchema as sharedIdentifierSchema,
+  getZodErrorMessage,
+} from "@/lib/validators/auth.schema";
 
 const identifierSchema = z.object({
-  identifier: z
-    .string()
-    .min(1, "لطفاً ایمیل یا شماره موبایل را وارد کنید")
-    .refine(
-      (val) => val.includes("@") || /^09[0-9]{9}$/.test(val),
-      "فرمت ایمیل یا شماره تلفن نامعتبر است"
-    ),
+  identifier: sharedIdentifierSchema,
 });
 
 const otpSchema = z.object({
@@ -40,7 +38,7 @@ const otpSchema = z.object({
 });
 
 const recoverySchema = z.object({
-  identifier: z.string().min(1, "لطفاً ایمیل یا شماره موبایل را وارد کنید"),
+  identifier: sharedIdentifierSchema,
   recoveryCode: z
     .string()
     .length(8, "کد بازیابی باید ۸ کاراکتر باشد")
@@ -74,6 +72,8 @@ export default function LoginForm() {
   const [approvalToken, setApprovalToken] = useState(null);
   const [approvalStatus, setApprovalStatus] = useState(null);
   const [approvalPolling, setApprovalPolling] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [shakeIdentifier, setShakeIdentifier] = useState(false);
 
   const {
     register,
@@ -87,6 +87,17 @@ export default function LoginForm() {
   });
 
   const otpValue = watch("otp");
+  const identifierValue = watch("identifier");
+
+  useEffect(() => {
+    if (formError) setFormError("");
+  }, [identifierValue]);
+
+  function triggerIdentifierShake(message) {
+    setFormError(message);
+    setShakeIdentifier(true);
+    window.setTimeout(() => setShakeIdentifier(false), 450);
+  }
 
   useEffect(() => {
     const savedStep = localStorage.getItem("2faStep");
@@ -180,9 +191,13 @@ export default function LoginForm() {
   async function onSendIdentifier(data) {
     const parsed = identifierSchema.safeParse(data);
     if (!parsed.success) {
-      toast.error(parsed.error.errors[0]?.message);
+      triggerIdentifierShake(
+        getZodErrorMessage(parsed.error, "لطفاً ایمیل یا شماره موبایل خود را وارد کنید")
+      );
       return;
     }
+
+    setFormError("");
     setLoading(true);
     try {
       const deviceId = await getDeviceId(parsed.data.identifier);
@@ -260,7 +275,7 @@ export default function LoginForm() {
   async function onVerifyOtp(data) {
     const parsed = otpSchema.safeParse(data);
     if (!parsed.success) {
-      toast.error(parsed.error.errors[0]?.message);
+      toast.error(getZodErrorMessage(parsed.error));
       return;
     }
     setLoading(true);
@@ -322,7 +337,7 @@ export default function LoginForm() {
   async function onCompleteLoginWithRecovery(data) {
     const parsed = recoveryAfterOtpSchema.safeParse(data);
     if (!parsed.success) {
-      toast.error(parsed.error.errors[0]?.message);
+      toast.error(getZodErrorMessage(parsed.error));
       return;
     }
     setLoading(true);
@@ -421,9 +436,16 @@ export default function LoginForm() {
   async function onRecoveryLogin(data) {
     const parsed = recoverySchema.safeParse(data);
     if (!parsed.success) {
-      toast.error(parsed.error.errors[0]?.message);
+      const message = getZodErrorMessage(parsed.error);
+      const isIdentifierIssue = parsed.error.issues.some((i) => i.path[0] === "identifier");
+      if (isIdentifierIssue) {
+        triggerIdentifierShake(message);
+      } else {
+        toast.error(message);
+      }
       return;
     }
+    setFormError("");
     setLoading(true);
     try {
       const res = await fetch("/api/auth/recovery-login", {
@@ -474,15 +496,17 @@ export default function LoginForm() {
     }
   }
 
-  function handleBack() {
-    setStep("identifier");
-    reset({ identifier: userIdentifier || "" });
-  }
-
   function toggleMode() {
     setMode(mode === "normal" ? "recovery" : "normal");
     setStep("identifier");
+    setFormError("");
     reset({ identifier: "", recoveryCode: "", otp: "" });
+  }
+
+  function handleBack() {
+    setStep("identifier");
+    setFormError("");
+    reset({ identifier: userIdentifier || "" });
   }
 
   const trustInfo = {
@@ -561,25 +585,31 @@ export default function LoginForm() {
           exit={{ opacity: 0, x: -16 }}
           transition={{ duration: 0.2 }}
         >
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
             {(step === "identifier" || isRecoveryMode) && (
-              <div className="relative">
+              <motion.div
+                animate={shakeIdentifier ? { x: [0, -8, 8, -6, 6, 0] } : { x: 0 }}
+                transition={{ duration: 0.45, ease: "easeInOut" }}
+                className={shakeIdentifier ? "animate-shake" : ""}
+              >
                 <Input
                   {...register("identifier")}
                   label="ایمیل یا شماره تماس"
                   placeholder="example@gmail.com یا 09123456789"
                   dir="ltr"
-                  error={errors.identifier?.message}
-                  className="pl-12"
+                  autoComplete="username"
+                  error={formError || errors.identifier?.message}
+                  className="text-left"
+                  startIcon={
+                    identifierValue?.includes("@") ? (
+                      <Mail size={18} aria-hidden />
+                    ) : (
+                      <Phone size={18} aria-hidden />
+                    )
+                  }
+                  aria-invalid={Boolean(formError || errors.identifier)}
                 />
-                <div className="absolute left-3 top-11 text-gray-400">
-                  {watch("identifier")?.includes("@") ? (
-                    <Mail size={18} />
-                  ) : (
-                    <Phone size={18} />
-                  )}
-                </div>
-              </div>
+              </motion.div>
             )}
 
             {step === "otp" && !isRecoveryMode && (
@@ -594,7 +624,7 @@ export default function LoginForm() {
                       type="text"
                       inputMode="numeric"
                       maxLength={1}
-                      className="w-10 h-12 sm:w-12 sm:h-14 text-center text-xl sm:text-2xl font-bold bg-gray-50 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:outline-none"
+                      className="w-10 h-12 sm:w-12 sm:h-14 text-center text-xl sm:text-2xl font-bold bg-gray-50 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-100 focus:outline-none transition-colors"
                       value={otpValue?.[index] || ""}
                       onChange={(e) => {
                         const val = e.target.value;
@@ -649,7 +679,7 @@ export default function LoginForm() {
                       type="button"
                       onClick={onRequestAdminApproval}
                       disabled={loading}
-                      className="w-full flex items-center justify-center gap-2 text-sm font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-xl py-3.5 hover:bg-amber-100 transition-colors disabled:opacity-50"
+                      className="w-full flex items-center justify-center gap-2 text-sm font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-xl py-3.5 hover:bg-amber-100 transition-colors disabled:opacity-50 cursor-pointer"
                     >
                       <Shield size={16} />
                       درخواست تأیید ادمین
@@ -681,7 +711,7 @@ export default function LoginForm() {
                 <button
                   type="button"
                   onClick={handleBack}
-                  className="w-full text-sm text-gray-500 hover:text-gray-700"
+                  className="w-full text-sm text-gray-500 hover:text-gray-700 cursor-pointer transition-colors"
                 >
                   بازگشت
                 </button>
@@ -731,7 +761,7 @@ export default function LoginForm() {
 
             {step === "otp" && !isRecoveryMode && (
               <div className="flex items-center justify-between text-sm">
-                <button type="button" onClick={handleBack} className="text-gray-500 flex items-center gap-1">
+                <button type="button" onClick={handleBack} className="text-gray-500 flex items-center gap-1 cursor-pointer hover:text-gray-700 transition-colors">
                   <ArrowLeft size={14} />
                   بازگشت
                 </button>
@@ -740,7 +770,7 @@ export default function LoginForm() {
                     ارسال مجدد {Math.floor(timer / 60)}:{String(timer % 60).padStart(2, "0")}
                   </span>
                 ) : (
-                  <button type="button" onClick={handleResend} disabled={loading} className="text-blue-600">
+                  <button type="button" onClick={handleResend} disabled={loading} className="text-blue-600 hover:text-blue-700 cursor-pointer disabled:cursor-not-allowed transition-colors">
                     ارسال مجدد
                   </button>
                 )}
@@ -748,7 +778,14 @@ export default function LoginForm() {
             )}
 
             {!isAdminApprovalStep && step !== "admin-approval-pending" && (
-              <Button type="submit" variant="primary" size="lg" fullWidth loading={loading}>
+              <Button
+                type="submit"
+                variant="primary"
+                size="lg"
+                fullWidth
+                loading={loading}
+                className="hover:shadow-xl hover:shadow-blue-200/60"
+              >
                 {step === "recovery-after-otp" ? (
                   <span className="flex items-center justify-center gap-2">
                     <Key size={18} /> تکمیل ورود
@@ -772,12 +809,12 @@ export default function LoginForm() {
 
             {step === "identifier" && !isRecoveryMode && (
               <div className="flex flex-col items-center gap-3 text-sm">
-                <button type="button" onClick={toggleMode} className="text-amber-600 flex items-center gap-1">
+                <button type="button" onClick={toggleMode} className="text-amber-600 flex items-center gap-1 cursor-pointer hover:text-amber-700 transition-colors">
                   <Key size={14} /> ورود با کد بازیابی
                 </button>
                 <p className="text-gray-500">
                   حساب ندارید؟{" "}
-                  <a href="/register" className="text-blue-600 font-semibold hover:underline">
+                  <a href="/register" className="text-blue-600 font-semibold hover:underline cursor-pointer">
                     ثبت‌نام
                   </a>
                 </p>
@@ -785,7 +822,7 @@ export default function LoginForm() {
             )}
 
             {isRecoveryMode && (
-              <button type="button" onClick={toggleMode} className="text-sm text-blue-600 w-full text-center">
+              <button type="button" onClick={toggleMode} className="text-sm text-blue-600 w-full text-center cursor-pointer hover:text-blue-700 transition-colors">
                 ← بازگشت به ورود عادی
               </button>
             )}
