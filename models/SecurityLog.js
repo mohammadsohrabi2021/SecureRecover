@@ -8,28 +8,8 @@ const SecurityLogSchema = new mongoose.Schema({
   },
   action: {
     type: String,
-    enum: [
-      "REGISTER",
-      "LOGIN_SUCCESS",
-      "LOGIN_FAILED",
-      "LOGOUT",
-      "OTP_SENT",
-      "OTP_VERIFIED",
-      "OTP_FAILED",
-      "OTP_MAX_ATTEMPTS",
-      "RECOVERY_CODES_GENERATED",
-      "RECOVERY_CODE_USED",
-      "RECOVERY_FAILED",
-      "SESSION_REVOKED",
-      "ALL_SESSIONS_REVOKED",
-      "DEVICE_TRUSTED",
-      "DEVICE_UNTRUSTED",
-      "ACCOUNT_LOCKED",
-      "ACCOUNT_UNLOCKED",
-      "TRUST_SCORE_UPDATED",
-      "CRITICAL_TRUST_LOGIN_ATTEMPT"
-    ],
-    required: true
+    required: true,
+    index: true,
   },
   status: {
     type: String,

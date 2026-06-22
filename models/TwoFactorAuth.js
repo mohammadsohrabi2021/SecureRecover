@@ -25,7 +25,24 @@ const TwoFactorAuthSchema = new mongoose.Schema({
     phoneVerified: {
       type: Boolean,
       default: false
+    },
+    recoveryVerified: {
+      type: Boolean,
+      default: false
     }
+  },
+  requiresRecoveryCode: {
+    type: Boolean,
+    default: false
+  },
+  canRequestAdminApproval: {
+    type: Boolean,
+    default: false
+  },
+  trustLevel: {
+    type: String,
+    enum: ["HIGH", "MEDIUM", "LOW", "CRITICAL"],
+    default: "MEDIUM"
   },
   emailOtpId: {
     type: mongoose.Schema.Types.ObjectId,

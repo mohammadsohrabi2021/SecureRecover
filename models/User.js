@@ -16,6 +16,15 @@ const UserSchema = new mongoose.Schema({
     trim: true,
     match: [/^\S+@\S+\.\S+$/, "Please enter a valid email address"]
   },
+  isAdmin: {
+    type: Boolean,
+    default: false
+  },
+  role: {
+    type: String,
+    enum: ["user", "admin", "super_admin"],
+    default: "user"
+  },
   phone: {
     type: String,
     required: [true, "Phone number is required"],

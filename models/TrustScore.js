@@ -20,7 +20,7 @@ const TrustEventSchema = new mongoose.Schema({
 });
 
 const TrustedDeviceScoreSchema = new mongoose.Schema({
-  deviceId: { type: String, required: true, unique: true },
+  deviceId: { type: String, required: true },
   deviceName: String,
   deviceType: String,
   browser: String,
@@ -28,7 +28,7 @@ const TrustedDeviceScoreSchema = new mongoose.Schema({
   lastSeen: Date,
   trustMultiplier: { type: Number, default: 1.0, min: 0.5, max: 1.5 },
   loginCount: { type: Number, default: 0 },
-  successRate: { type: Number, default: 100 }
+  successRate: { type: Number, default: 100 },
 });
 
 const UnusualPatternSchema = new mongoose.Schema({
@@ -77,10 +77,9 @@ const TrustScoreSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Indexes
+// Indexes — deviceId uniqueness is per-user (enforced in service layer), not global
 TrustScoreSchema.index({ userId: 1 });
 TrustScoreSchema.index({ currentScore: -1 });
-TrustScoreSchema.index({ "trustedDevices.deviceId": 1 });
 
 export default mongoose.models.TrustScore ||
   mongoose.model("TrustScore", TrustScoreSchema);
