@@ -1,555 +1,469 @@
-// services/trustScore.service.js
 import connectDB from "@/lib/db";
 import TrustScore from "@/models/TrustScore";
+import TrustEvent from "@/models/TrustEvent";
 import TrustedDevice from "@/models/TrustedDevice";
 import SecurityLog from "@/models/SecurityLog";
-import { getGeoLocation, isSuspiciousIP } from "@/lib/utils/geo";
 import { UAParser } from "ua-parser-js";
+import {
+  resolveTrustLevel,
+  TRUST_LEVELS,
+  REQUIRED_ACTIONS,
+  TRUST_LEVEL_CONFIG,
+} from "@/types/trust";
+
+const SCORE_WEIGHTS = {
+  NEW_LOCATION: -15,
+  UNUSUAL_TIME: -10,
+  NEW_DEVICE: -12,
+  SUSPICIOUS_IP: -25,
+  WRONG_OTP: -8,
+  FAILED_LOGIN: -10,
+  SUCCESS_LOGIN: 8,
+  SUCCESS_WITH_OTP: 5,
+  SUCCESS_WITHOUT_OTP: 12,
+  TRUSTED_DEVICE: 10,
+  RECOVERY_USED: 3,
+};
 
 class TrustScoreService {
-  constructor() {
-    this.SCORE_WEIGHTS = {
-      NEW_LOCATION: -3,
-      UNUSUAL_TIME: -2,
-      NEW_DEVICE: -2,
-      SUSPICIOUS_IP: -8,
-      WRONG_OTP: -2,
-      MULTIPLE_WRONG_OTP: -5,
-      FAILED_LOGIN: -2,
-      
-      SUCCESS_LOGIN: 12,
-      SUCCESS_LOGIN_WITH_OTP: 6,
-      SUCCESS_LOGIN_WITHOUT_OTP: 18,
-      TRUSTED_DEVICE_LOGIN: 8,
-      CONSISTENT_PATTERN: 4,
-      LONG_TERM_USER: 20,
-      TWO_FA_COMPLETED: 15
-    };
-    
-    this.TRUST_LEVELS = {
-      HIGH: { 
-        minScore: 60, 
-        requiredAction: "NONE", 
-        label: "امنیت بالا", 
-        color: "green", 
-        icon: "✅",
-        message: "سطح اعتماد بالا - ورود بدون نیاز به کد تأیید"
-      },
-      MEDIUM: { 
-        minScore: 30, 
-        requiredAction: "OTP", 
-        label: "امنیت متوسط", 
-        color: "yellow", 
-        icon: "🟡",
-        message: "سطح اعتماد متوسط - لطفاً کد تأیید را وارد کنید"
-      },
-      LOW: { 
-        minScore: 10, 
-        requiredAction: "OTP_AND_BACKUP", 
-        label: "امنیت پایین", 
-        color: "orange", 
-        icon: "⚠️",
-        message: "سطح اعتماد پایین - لطفاً کد تأیید و کد بازیابی را وارد کنید"
-      },
-      CRITICAL: { 
-        minScore: -Infinity, 
-        requiredAction: "ADMIN_APPROVAL", 
-        label: "امنیت بحرانی", 
-        color: "red", 
-        icon: "🔴",
-        message: "سطح اعتماد بحرانی - لطفاً با پشتیبانی تماس بگیرید"
-      }
-    };
-  }
-  
-  async calculateTrustLevel(userId, currentDeviceId, context = {}) {
+  /**
+   * Idempotent upsert of a trusted device within a user's TrustScore document.
+   * Updates lastSeen if deviceId exists; otherwise adds to the array.
+   */
+  async upsertTrustedDeviceEntry(userId, deviceInfo = {}, _retry = false) {
     await connectDB();
-    
+
+    const {
+      deviceId,
+      deviceName = "دستگاه ناشناس",
+      deviceType,
+      browser,
+      os,
+    } = deviceInfo;
+
+    if (!deviceId) return null;
+
+    const now = new Date();
+    const updateOpts = { returnDocument: "after" };
+
+    try {
+      const updated = await TrustScore.findOneAndUpdate(
+        { userId, "trustedDevices.deviceId": deviceId },
+        {
+          $set: {
+            "trustedDevices.$.lastSeen": now,
+            "trustedDevices.$.deviceName": deviceName,
+            ...(deviceType && { "trustedDevices.$.deviceType": deviceType }),
+            ...(browser && { "trustedDevices.$.browser": browser }),
+            ...(os && { "trustedDevices.$.os": os }),
+            lastUpdated: now,
+          },
+          $inc: { "trustedDevices.$.loginCount": 1 },
+        },
+        updateOpts
+      );
+
+      if (updated) {
+        const entry = updated.trustedDevices.find((d) => d.deviceId === deviceId);
+        if (entry) {
+          entry.trustMultiplier = Math.min(1.5, (entry.trustMultiplier || 1) + 0.05);
+          updated.trustedDevices = this.dedupeTrustedDevices(updated.trustedDevices);
+          await updated.save();
+        }
+        return updated;
+      }
+
+      const inserted = await TrustScore.findOneAndUpdate(
+        {
+          userId,
+          "trustedDevices.deviceId": { $ne: deviceId },
+        },
+        {
+          $push: {
+            trustedDevices: {
+              deviceId,
+              deviceName,
+              deviceType,
+              browser,
+              os,
+              lastSeen: now,
+              trustMultiplier: 1.0,
+              loginCount: 1,
+              successRate: 100,
+            },
+          },
+          $set: { lastUpdated: now },
+          $setOnInsert: { currentScore: 50, baseScore: 50 },
+        },
+        { upsert: true, setDefaultsOnInsert: true, ...updateOpts }
+      );
+
+      if (inserted && !inserted.trustedDevices.some((d) => d.deviceId === deviceId)) {
+        return this.upsertTrustedDeviceEntry(userId, deviceInfo);
+      }
+
+      return inserted;
+    } catch (error) {
+      // Prevent duplicate trusted device entries caused by legacy global unique index
+      if (
+        !_retry &&
+        error.code === 11000 &&
+        error.keyPattern?.["trustedDevices.deviceId"]
+      ) {
+        const { ensureTrustScoreIndexes } = await import("@/lib/trustScoreIndexes");
+        await ensureTrustScoreIndexes(true);
+        return this.upsertTrustedDeviceEntry(userId, deviceInfo, true);
+      }
+      throw error;
+    }
+  }
+
+  /** Remove duplicate deviceId entries within a single user's trustedDevices array. */
+  dedupeTrustedDevices(devices = []) {
+    const map = new Map();
+    for (const d of devices) {
+      const prev = map.get(d.deviceId);
+      if (!prev || new Date(d.lastSeen) > new Date(prev.lastSeen || 0)) {
+        map.set(d.deviceId, d);
+      }
+    }
+    return Array.from(map.values());
+  }
+
+  /** Sync embedded trustedDevices from TrustedDevice collection (deduped by deviceId). */
+  async syncTrustedDevicesFromCollection(userId) {
+    await connectDB();
+
+    const devices = await TrustedDevice.find({ userId, isActive: true }).lean();
+    const byDeviceId = new Map();
+
+    for (const device of devices) {
+      const prev = byDeviceId.get(device.deviceId);
+      if (!prev || new Date(device.lastUsedAt) > new Date(prev.lastUsedAt)) {
+        byDeviceId.set(device.deviceId, device);
+      }
+    }
+
+    for (const device of byDeviceId.values()) {
+      await this.upsertTrustedDeviceEntry(userId, {
+        deviceId: device.deviceId,
+        deviceName: device.deviceName,
+        deviceType: device.deviceType,
+        browser: device.browser,
+        os: device.os,
+      });
+    }
+  }
+
+  async calculateTrustLevel(userId, deviceId, context = {}) {
+    await connectDB();
+
     let trustRecord = await TrustScore.findOne({ userId });
-    
     if (!trustRecord) {
       return {
-        level: "MEDIUM",
-        requiredAction: "OTP",
+        level: TRUST_LEVELS.MEDIUM,
+        requiredAction: REQUIRED_ACTIONS.OTP,
         score: 50,
-        message: "برای اولین ورود، لطفاً کد تأیید را وارد کنید",
-        trustLevelConfig: this.TRUST_LEVELS.MEDIUM
+        reasons: ["اولین ورود — نیاز به تأیید OTP"],
+        message: TRUST_LEVEL_CONFIG.MEDIUM.message,
       };
     }
-    
+
     let score = trustRecord.currentScore;
-    let reasons = [];
-    let penaltyApplied = false;
-    
-    // ✅ 1. بررسی دستگاه با TrustedDevice
+    const reasons = [];
+    const now = new Date();
+
     const trustedDevice = await TrustedDevice.findOne({
       userId,
-      deviceId: currentDeviceId,
-      isActive: true
+      deviceId,
+      isActive: true,
     });
-    
-    const deviceTrust = trustRecord.trustedDevices.find(d => d.deviceId === currentDeviceId);
-    
-    // ✅ 2. تشخیص تغییرات (دستگاه جدید، مکان جدید، OS جدید، Browser جدید)
-    let isNewDevice = false;
-    let isNewLocation = false;
-    let isNewOS = false;
-    let isNewBrowser = false;
-    
-    // بررسی دستگاه جدید
+
+    const deviceTrust = trustRecord.trustedDevices?.find(
+      (d) => d.deviceId === deviceId
+    );
+
     if (!trustedDevice) {
-      isNewDevice = true;
-      console.log(`🔍 New device detected: ${currentDeviceId}`);
+      score += SCORE_WEIGHTS.NEW_DEVICE;
+      reasons.push("دستگاه جدید");
+      await this.addUnusualPattern(userId, "NEW_DEVICE", 2);
     }
-    
-    // بررسی مکان جدید
-    if (context.location && trustRecord.lastLoginLocation) {
-      if (trustRecord.lastLoginLocation !== context.location.city) {
-        isNewLocation = true;
-        console.log(`🔍 New location detected: ${context.location.city}`);
-      }
+
+    if (
+      context.location?.city &&
+      trustRecord.lastLoginLocation &&
+      trustRecord.lastLoginLocation !== context.location.city
+    ) {
+      score += SCORE_WEIGHTS.NEW_LOCATION;
+      reasons.push(`مکان جدید: ${context.location.city}`);
+      await this.addUnusualPattern(userId, "NEW_LOCATION", 2);
     }
-    
-    // بررسی OS و Browser جدید
-    if (context.userAgent) {
-      const parser = new UAParser(context.userAgent);
-      const deviceInfo = parser.getResult();
-      const currentOS = deviceInfo.os.name || "Unknown";
-      const currentBrowser = deviceInfo.browser.name || "Unknown";
-      
-      if (trustRecord.lastLoginOS && trustRecord.lastLoginOS !== currentOS) {
-        isNewOS = true;
-        console.log(`🔍 New OS detected: ${currentOS} (was: ${trustRecord.lastLoginOS})`);
-      }
-      
-      if (trustRecord.lastLoginBrowser && trustRecord.lastLoginBrowser !== currentBrowser) {
-        isNewBrowser = true;
-        console.log(`🔍 New Browser detected: ${currentBrowser} (was: ${trustRecord.lastLoginBrowser})`);
-      }
-    }
-    
-    // ✅ 3. اگر هر کدام از موارد زیر تغییر کرده باشد، الزام به OTP
-    const requiresOTP = isNewDevice || isNewLocation || isNewOS || isNewBrowser;
-    
-    if (requiresOTP) {
-      console.log(`🔐 New device/location/OS/Browser detected - Requiring OTP`);
-      
-      if (isNewDevice) {
-        score += this.SCORE_WEIGHTS.NEW_DEVICE;
-        reasons.push(`دستگاه جدید (جریمه: ${Math.abs(this.SCORE_WEIGHTS.NEW_DEVICE)} امتیاز)`);
-        await this.addUnusualPattern(userId, "NEW_DEVICE", 2);
-      }
-      
-      if (isNewLocation) {
-        const penalty = Math.max(-6, this.SCORE_WEIGHTS.NEW_LOCATION);
-        score += penalty;
-        reasons.push(`ورود از شهر جدید: ${context.location.city} (جریمه: ${Math.abs(penalty)} امتیاز)`);
-        await this.addUnusualPattern(userId, "NEW_LOCATION", 2);
-      }
-      
-      if (isNewOS) {
-        score += -2;
-        reasons.push(`سیستم عامل جدید (جریمه: 2 امتیاز)`);
-        await this.addUnusualPattern(userId, "UNUSUAL_TIME", 1);
-      }
-      
-      if (isNewBrowser) {
-        score += -1;
-        reasons.push(`مرورگر جدید (جریمه: 1 امتیاز)`);
-      }
-      
-      penaltyApplied = true;
-    }
-    
-    // ✅ 4. اگر دستگاه معتبر و هیچ تغییری نکرده، اجازه ورود بدون کد
-    if (!requiresOTP && trustedDevice) {
-      if (deviceTrust) {
-        score = score * deviceTrust.trustMultiplier;
-        if (deviceTrust.trustMultiplier > 1) {
-          reasons.push(`دستگاه مورد اعتماد (ضریب ${deviceTrust.trustMultiplier})`);
-        }
-      }
-      score += this.SCORE_WEIGHTS.TRUSTED_DEVICE_LOGIN;
-      reasons.push(`ورود از دستگاه معتبر (+${this.SCORE_WEIGHTS.TRUSTED_DEVICE_LOGIN} امتیاز)`);
-      
-      if (trustedDevice.loginCount > 3) {
-        const bonus = Math.min(5, Math.floor(trustedDevice.loginCount / 3));
-        score += bonus;
-        reasons.push(`استفاده مکرر از دستگاه (+${bonus} امتیاز)`);
-      }
-    }
-    
-    // 5. بررسی ساعت غیرمعمول
-    const currentHour = new Date().getHours();
+
+    const hour = now.getHours();
     const usualHours = await this.getUsualLoginHours(userId);
-    if (!usualHours.includes(currentHour) && usualHours.length >= 3) {
-      const penalty = Math.max(-5, this.SCORE_WEIGHTS.UNUSUAL_TIME);
-      score += penalty;
-      reasons.push(`ورود در ساعت غیرمعمول (${currentHour}:00) (جریمه: ${Math.abs(penalty)} امتیاز)`);
-      penaltyApplied = true;
+    if (usualHours.length >= 3 && !usualHours.includes(hour)) {
+      score += SCORE_WEIGHTS.UNUSUAL_TIME;
+      reasons.push(`ساعت غیرمعمول (${hour}:00)`);
+      await this.addUnusualPattern(userId, "UNUSUAL_TIME", 1);
     }
-    
-    // 6. بررسی IP مشکوک
+
     if (context.isSuspiciousIP) {
-      const penalty = Math.max(-12, this.SCORE_WEIGHTS.SUSPICIOUS_IP);
-      score += penalty;
-      reasons.push(`IP مشکوک تشخیص داده شد (جریمه: ${Math.abs(penalty)} امتیاز)`);
-      penaltyApplied = true;
+      score += SCORE_WEIGHTS.SUSPICIOUS_IP;
+      reasons.push("IP مشکوک");
       await this.addUnusualPattern(userId, "SUSPICIOUS_IP", 3);
     }
-    
-    // 7. محدود کردن امتیاز نهایی
-    if (context.isSuspiciousIP && context.ip !== "127.0.0.1") {
-      score = Math.max(-15, Math.min(100, Math.floor(score)));
-    } else {
-      score = Math.max(0, Math.min(100, Math.floor(score)));
-    }
-    
-    // 8. تعیین سطح نهایی
-    let level = "MEDIUM";
-    let requiredAction = "OTP";
-    
-    if (requiresOTP) {
-      level = "MEDIUM";
-      requiredAction = "OTP";
-      reasons.push("⚠️ تغییر در دستگاه/مکان/سیستم عامل - نیاز به تأیید");
-    } else {
-      for (const [key, config] of Object.entries(this.TRUST_LEVELS)) {
-        if (score >= config.minScore) {
-          level = key;
-          requiredAction = config.requiredAction;
-          break;
-        }
+
+    if (trustedDevice && deviceTrust?.trustMultiplier) {
+      score = Math.floor(score * deviceTrust.trustMultiplier);
+      if (deviceTrust.trustMultiplier > 1) {
+        reasons.push(`ضریب دستگاه مورد اعتماد (${deviceTrust.trustMultiplier})`);
       }
+      score += SCORE_WEIGHTS.TRUSTED_DEVICE;
+      reasons.push("دستگاه مورد اعتماد");
     }
-    
-    // 9. ذخیره تغییرات در دیتابیس
-    if (trustRecord.currentScore !== score && penaltyApplied) {
-      trustRecord.currentScore = score;
-      trustRecord.lastUpdated = new Date();
-      await trustRecord.save();
-    }
-    
-    if (reasons.length > 0) {
-      await this.addTrustHistory(userId, score, reasons.join(", "));
-    }
-    
+
+    score = Math.max(-50, Math.min(100, Math.floor(score)));
+
+    const { level, requiredAction, config } = resolveTrustLevel(score);
+
+    trustRecord.currentScore = score;
+    trustRecord.lastUpdated = now;
+    await trustRecord.save();
+
+    await this.recordTrustEvent(userId, deviceId, {
+      ipAddress: context.ip,
+      location: context.location,
+      timeOfDay: hour,
+      dayOfWeek: now.getDay(),
+      isSuccessful: false,
+      score,
+      usedOTP: false,
+    });
+
     return {
       level,
       requiredAction,
       score,
       reasons,
-      message: this.TRUST_LEVELS[level].message,
-      trustLevelConfig: this.TRUST_LEVELS[level]
+      message: config.message,
     };
   }
-  
+
   async updateTrustScore(userId, event) {
     await connectDB();
-    
+
     let trustRecord = await TrustScore.findOne({ userId });
     if (!trustRecord) {
       trustRecord = await TrustScore.create({ userId, currentScore: 50 });
     }
-    
-    // ✅ همگام‌سازی trustedDevices با TrustedDevice
+
     const trustedDevicesFromDB = await TrustedDevice.find({
       userId,
-      isActive: true
-    });
-    
-    trustRecord.trustedDevices = trustedDevicesFromDB.map(device => ({
-      deviceId: device.deviceId,
-      deviceName: device.deviceName,
-      lastSeen: device.lastUsedAt,
-      loginCount: device.loginCount,
-      trustMultiplier: Math.min(1.5, 1 + (device.loginCount / 20)),
-      successRate: device.loginCount > 0 ? 100 : 100
-    }));
-    
+      isActive: true,
+    }).lean();
+
+    const seen = new Set();
+    for (const device of trustedDevicesFromDB) {
+      if (seen.has(device.deviceId)) continue;
+      seen.add(device.deviceId);
+      await this.upsertTrustedDeviceEntry(userId, {
+        deviceId: device.deviceId,
+        deviceName: device.deviceName,
+        deviceType: device.deviceType,
+        browser: device.browser,
+        os: device.os,
+      });
+    }
+
+    trustRecord = await TrustScore.findOne({ userId });
+
+    // Calculate trust score change based on login event — always initialize to prevent ReferenceError
     let scoreChange = 0;
     let reason = "";
-    
+
     if (event.isSuccessful) {
-      if (event.isTrustedDevice) {
-        scoreChange = this.SCORE_WEIGHTS.TRUSTED_DEVICE_LOGIN;
-        reason = "ورود موفق از دستگاه معتبر";
-      } else if (event.noOTPNeeded) {
-        scoreChange = this.SCORE_WEIGHTS.SUCCESS_LOGIN_WITHOUT_OTP;
-        reason = "ورود موفق بدون کد (امتیاز بالا)";
-      } else if (event.used2FA) {
-        scoreChange = this.SCORE_WEIGHTS.TWO_FA_COMPLETED;
-        reason = "تأیید دو مرحله‌ای کامل شد";
-      } else if (event.usedOTP) {
-        scoreChange = this.SCORE_WEIGHTS.SUCCESS_LOGIN_WITH_OTP;
-        reason = "ورود موفق با کد یکبار مصرف";
+      if (event.noOTPNeeded) {
+        scoreChange = SCORE_WEIGHTS.SUCCESS_WITHOUT_OTP;
+        reason = "ورود بدون OTP";
       } else if (event.usedBackupCode) {
-        scoreChange = this.SCORE_WEIGHTS.SUCCESS_LOGIN_WITH_OTP - 2;
-        reason = "ورود موفق با کد پشتیبان";
+        scoreChange = SCORE_WEIGHTS.RECOVERY_USED;
+        reason = "ورود با کد بازیابی";
+      } else if (event.usedOTP) {
+        scoreChange = SCORE_WEIGHTS.SUCCESS_WITH_OTP;
+        reason = "ورود با OTP";
       } else {
-        scoreChange = this.SCORE_WEIGHTS.SUCCESS_LOGIN;
+        scoreChange = SCORE_WEIGHTS.SUCCESS_LOGIN;
         reason = "ورود موفق";
       }
-      
-      if (event.deviceId) {
-        await this.updateTrustedDevice(trustRecord, event.deviceId, event.deviceInfo, true);
+
+      if (event.isTrustedDevice) {
+        scoreChange += SCORE_WEIGHTS.TRUSTED_DEVICE;
       }
-      
+
       trustRecord.lastLoginAt = new Date();
-      if (event.location) {
+      if (event.location?.city) {
         trustRecord.lastLoginLocation = event.location.city;
       }
-      
+
       if (event.userAgent) {
         const parser = new UAParser(event.userAgent);
-        const deviceInfo = parser.getResult();
-        trustRecord.lastLoginOS = deviceInfo.os.name || "Unknown";
-        trustRecord.lastLoginBrowser = deviceInfo.browser.name || "Unknown";
-        console.log(`📱 Saved OS: ${trustRecord.lastLoginOS}, Browser: ${trustRecord.lastLoginBrowser}`);
+        const info = parser.getResult();
+        trustRecord.lastLoginOS = info.os.name || "Unknown";
+        trustRecord.lastLoginBrowser = info.browser.name || "Unknown";
       }
     } else {
-      scoreChange = this.SCORE_WEIGHTS.FAILED_LOGIN;
-      reason = "تلاش ناموفق برای ورود";
-      
-      if (event.wrongOTPCount > 3) {
-        scoreChange = this.SCORE_WEIGHTS.MULTIPLE_WRONG_OTP;
-        reason = "تعداد تلاش‌های ناموفق زیاد";
-      }
-      
-      if (event.deviceId) {
-        await this.updateTrustedDevice(trustRecord, event.deviceId, event.deviceInfo, false);
-      }
+      scoreChange = event.wrongOTPCount > 2
+        ? SCORE_WEIGHTS.WRONG_OTP
+        : SCORE_WEIGHTS.FAILED_LOGIN;
+      reason = "تلاش ناموفق ورود";
     }
-    
-    let newScore = trustRecord.currentScore + scoreChange;
-    if (event.isSuccessful) {
-      newScore = Math.min(100, newScore);
-    } else {
-      newScore = Math.max(0, newScore);
-    }
-    
+
+    const newScore = event.isSuccessful
+      ? Math.min(100, trustRecord.currentScore + scoreChange)
+      : Math.max(-50, trustRecord.currentScore + scoreChange);
+
     trustRecord.currentScore = newScore;
     trustRecord.lastUpdated = new Date();
     await trustRecord.save();
+
     await this.addTrustHistory(userId, newScore, reason);
-    
+
+    const now = new Date();
+    await this.recordTrustEvent(userId, event.deviceId || "unknown", {
+      ipAddress: event.ip,
+      location: event.location,
+      timeOfDay: now.getHours(),
+      dayOfWeek: now.getDay(),
+      isSuccessful: event.isSuccessful,
+      score: newScore,
+      scoreChange,
+      reason,
+      usedOTP: event.usedOTP || false,
+      usedBackupCode: event.usedBackupCode || false,
+    });
+
     await SecurityLog.create({
       userId,
       action: "TRUST_SCORE_UPDATED",
       status: "success",
-      details: { scoreChange, newScore, reason, event }
+      ip: event.ip,
+      deviceId: event.deviceId,
+      details: { scoreChange, newScore, reason },
     });
-    
+
     return { oldScore: newScore - scoreChange, newScore, scoreChange, reason };
   }
-  
-  async increaseTrustScore(userId, deviceId, eventData = {}) {
-    await connectDB();
-    
-    let trustRecord = await TrustScore.findOne({ userId });
-    if (!trustRecord) {
-      trustRecord = await TrustScore.create({ userId, currentScore: 50 });
-    }
-    
-    let increaseAmount = 0;
-    let reason = "";
-    
-    if (eventData.directLogin) {
-      increaseAmount = this.SCORE_WEIGHTS.SUCCESS_LOGIN_WITHOUT_OTP;
-      reason = "ورود مستقیم (دستگاه可信)";
-    } else if (eventData.used2FA) {
-      increaseAmount = this.SCORE_WEIGHTS.TWO_FA_COMPLETED;
-      reason = "تأیید دو مرحله‌ای کامل";
-    } else if (eventData.usedOTPOnly) {
-      increaseAmount = this.SCORE_WEIGHTS.SUCCESS_LOGIN_WITH_OTP;
-      reason = "ورود موفق با کد یکبار مصرف";
-    } else {
-      increaseAmount = this.SCORE_WEIGHTS.SUCCESS_LOGIN;
-      reason = "ورود موفق";
-    }
-    
-    let newScore = Math.min(100, trustRecord.currentScore + increaseAmount);
-    trustRecord.currentScore = newScore;
-    trustRecord.lastUpdated = new Date();
-    trustRecord.lastLoginAt = new Date();
-    
-    if (deviceId) {
-      const deviceExists = trustRecord.trustedDevices.find(d => d.deviceId === deviceId);
-      if (deviceExists) {
-        deviceExists.lastSeen = new Date();
-        deviceExists.loginCount += 1;
-        deviceExists.trustMultiplier = Math.min(1.5, deviceExists.trustMultiplier + 0.05);
-      } else {
-        trustRecord.trustedDevices.push({
-          deviceId,
-          deviceName: eventData.deviceName || "New Device",
-          lastSeen: new Date(),
-          loginCount: 1,
-          trustMultiplier: 1.0,
-          successRate: 100
-        });
-      }
-    }
-    
-    await trustRecord.save();
-    await this.addTrustHistory(userId, newScore, reason);
-    
-    return { oldScore: newScore - increaseAmount, newScore, increaseAmount, reason };
-  }
-  
-  async getUsualLoginHours(userId) {
-    const trustRecord = await TrustScore.findOne({ userId });
-    if (!trustRecord) return [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
-    
-    const hours = new Set();
-    trustRecord.trustHistory.forEach(history => {
-      if (history.changedAt) {
-        const hour = new Date(history.changedAt).getHours();
-        hours.add(hour);
-      }
+
+  async recordTrustEvent(userId, deviceId, data) {
+    await TrustEvent.create({
+      userId,
+      deviceId,
+      ipAddress: data.ipAddress,
+      location: data.location,
+      timeOfDay: data.timeOfDay,
+      dayOfWeek: data.dayOfWeek,
+      isSuccessful: data.isSuccessful,
+      score: data.score ?? 0,
+      scoreChange: data.scoreChange ?? 0,
+      reason: data.reason ?? "",
+      usedOTP: data.usedOTP ?? false,
+      usedBackupCode: data.usedBackupCode ?? false,
     });
-    
-    if (hours.size === 0) {
+  }
+
+  async getUsualLoginHours(userId) {
+    const events = await TrustEvent.find({ userId, isSuccessful: true })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .select("timeOfDay");
+
+    if (events.length === 0) {
       return [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
     }
-    
-    return Array.from(hours);
+
+    return [...new Set(events.map((e) => e.timeOfDay).filter((h) => h != null))];
   }
-  
-  async updateTrustedDevice(trustRecord, deviceId, deviceInfo, isSuccess) {
-    const existingDevice = trustRecord.trustedDevices.find(d => d.deviceId === deviceId);
-    
-    if (existingDevice) {
-      existingDevice.lastSeen = new Date();
-      existingDevice.loginCount += 1;
-      
-      if (isSuccess) {
-        existingDevice.successRate = (existingDevice.successRate * (existingDevice.loginCount - 1) + (isSuccess ? 100 : 0)) / existingDevice.loginCount;
-        existingDevice.trustMultiplier = Math.min(1.5, 1.0 + (existingDevice.successRate - 50) / 100);
-      }
-    } else if (isSuccess && deviceInfo) {
-      trustRecord.trustedDevices.push({
-        deviceId,
-        deviceName: deviceInfo.deviceName || "Unknown",
-        deviceType: deviceInfo.deviceType || "unknown",
-        browser: deviceInfo.browser,
-        os: deviceInfo.os,
-        lastSeen: new Date(),
-        loginCount: 1,
-        successRate: 100,
-        trustMultiplier: 1.0
-      });
-    }
-    
-    await trustRecord.save();
-  }
-  
+
   async addUnusualPattern(userId, pattern, severity) {
-    await connectDB();
-    
-    const trustRecord = await TrustScore.findOne({ userId });
+    let trustRecord = await TrustScore.findOne({ userId });
     if (!trustRecord) {
-      await TrustScore.create({ 
-        userId, 
+      await TrustScore.create({
+        userId,
         currentScore: 50,
-        unusualPatterns: [{
-          pattern,
-          severity,
-          detectedAt: new Date(),
-          resolved: false
-        }]
+        unusualPatterns: [{ pattern, severity, detectedAt: new Date() }],
       });
       return;
     }
-    
+
     trustRecord.unusualPatterns.push({
       pattern,
       severity,
       detectedAt: new Date(),
-      resolved: false
+      resolved: false,
     });
-    
+
     if (trustRecord.unusualPatterns.length > 20) {
       trustRecord.unusualPatterns = trustRecord.unusualPatterns.slice(-20);
     }
-    
+
     await trustRecord.save();
-    console.log(`⚠️ Unusual pattern added: ${pattern} (severity: ${severity})`);
   }
-  
+
   async addTrustHistory(userId, score, reason) {
-    await connectDB();
-    
     let trustRecord = await TrustScore.findOne({ userId });
     if (!trustRecord) {
       trustRecord = await TrustScore.create({ userId, currentScore: 50 });
     }
-    
-    trustRecord.trustHistory.push({
-      score,
-      reason,
-      changedAt: new Date()
-    });
-    
+
+    trustRecord.trustHistory.push({ score, reason, changedAt: new Date() });
+
     if (trustRecord.trustHistory.length > 50) {
       trustRecord.trustHistory = trustRecord.trustHistory.slice(-50);
     }
-    
+
     await trustRecord.save();
   }
-  
+
   async getTrustStatistics(userId) {
     await connectDB();
-    
+
     const trustRecord = await TrustScore.findOne({ userId });
     if (!trustRecord) {
       return {
         currentScore: 50,
-        level: "MEDIUM",
+        level: TRUST_LEVELS.MEDIUM,
         trustedDevicesCount: 0,
         unusualPatternsCount: 0,
         lastLoginLocation: null,
         lastLoginAt: null,
-        recommendation: "ورودهای موفق بیشتری داشته باشید تا امتیاز اعتماد شما افزایش یابد"
+        recommendation: "با ورودهای موفق، امتیاز اعتماد شما افزایش می‌یابد",
       };
     }
-    
-    let level = "MEDIUM";
-    for (const [key, config] of Object.entries(this.TRUST_LEVELS)) {
-      if (trustRecord.currentScore >= config.minScore) {
-        level = key;
-        break;
-      }
-    }
-    
+
+    const { level } = resolveTrustLevel(trustRecord.currentScore);
+
     return {
       currentScore: trustRecord.currentScore,
-      level: level,
-      trustedDevicesCount: trustRecord.trustedDevices.length,
-      unusualPatternsCount: trustRecord.unusualPatterns.filter(p => !p.resolved).length,
+      level,
+      trustedDevicesCount: trustRecord.trustedDevices?.length || 0,
+      unusualPatternsCount: trustRecord.unusualPatterns?.filter((p) => !p.resolved).length || 0,
       lastLoginLocation: trustRecord.lastLoginLocation || null,
       lastLoginAt: trustRecord.lastLoginAt || null,
-      recommendation: this.getRecommendation(trustRecord.currentScore, trustRecord.trustedDevices.length)
+      recommendation: this.getRecommendation(trustRecord.currentScore),
     };
   }
-  
-  getRecommendation(score, deviceCount) {
-    if (score < 30) {
-      return "⚠️ امتیاز اعتماد شما پایین است. توصیه می‌شود از دستگاه‌های آشنا و مکان‌های معمول وارد شوید.";
+
+  getRecommendation(score) {
+    if (score < TRUST_LEVEL_CONFIG.LOW.minScore) {
+      return "امتیاز اعتماد بحرانی است. با پشتیبانی تماس بگیرید.";
     }
-    if (deviceCount === 0) {
-      return "💡 دستگاه خود را به عنوان دستگاه قابل اعتماد ثبت کنید تا ورود سریع‌تری داشته باشید.";
+    if (score < TRUST_LEVEL_CONFIG.MEDIUM.minScore) {
+      return "از دستگاه و مکان‌های آشنا برای ورود استفاده کنید.";
     }
-    if (score < 60) {
-      return "📈 با ورودهای موفق مکرر، امتیاز اعتماد شما افزایش می‌یابد.";
+    if (score < TRUST_LEVEL_CONFIG.HIGH.minScore) {
+      return "با ورودهای موفق مکرر، امتیاز اعتماد افزایش می‌یابد.";
     }
-    return "✅ سطح اعتماد شما عالی است. می‌توانید بدون کد تأیید وارد شوید.";
-  }
-  
-  async resetTrustScore(userId) {
-    await connectDB();
-    await TrustScore.deleteOne({ userId });
-    return { success: true, message: "Trust score reset successfully" };
+    return "سطح اعتماد عالی — ورود بدون OTP فعال است.";
   }
 }
 
