@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken } from '@/lib/jwt'; 
-import connectDB from '@/lib/mongodb';
+import connectDB from '@/lib/db';
 import TrustedDevice from '@/models/TrustedDevice';
 
 export async function GET() {
@@ -40,6 +40,7 @@ export async function GET() {
         browser: device.browser,
         os: device.os,
         lastUsedAt: device.lastUsedAt,
+        lastUsedIp: device.lastUsedIp,
         loginCount: device.loginCount,
         isActive: device.isActive
       }))

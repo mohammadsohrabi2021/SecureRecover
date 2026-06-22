@@ -29,9 +29,12 @@ import {
 import toast from "react-hot-toast";
 import TrustIndicator from "@/components/dashboard/TrustIndicator";
 import SessionsList from "@/components/dashboard/SessionsList";
+import LoginRequestsCard from "@/components/dashboard/LoginRequestsCard";
 
 export default function DashboardPage() {
   const [user, setUser] = useState(null);
+  const [trustStats, setTrustStats] = useState(null);
+  const [recoveryStatus, setRecoveryStatus] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sessionsLoading, setSessionsLoading] = useState(true);
@@ -42,8 +45,30 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchUser();
+    fetchTrustStats();
+    fetchRecoveryStatus();
     fetchSessions();
   }, []);
+
+  const fetchTrustStats = async () => {
+    try {
+      const res = await fetch("/api/trust/stats");
+      const data = await res.json();
+      if (res.ok) setTrustStats(data.data?.statistics);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const fetchRecoveryStatus = async () => {
+    try {
+      const res = await fetch("/api/recovery/status");
+      const data = await res.json();
+      if (res.ok) setRecoveryStatus(data.data);
+    } catch (error) {
+      console.error(error);
+    }
+  };
 
   const fetchUser = async () => {
     try {
@@ -133,10 +158,14 @@ export default function DashboardPage() {
     });
   };
 
-  const getTrustScore = () => {
-    // این مقدار باید از API دریافت شود
-    return 60;
+  const levelLabels = {
+    HIGH: "بالا",
+    MEDIUM: "متوسط",
+    LOW: "پایین",
+    CRITICAL: "بحرانی",
   };
+
+  const trustLabel = trustStats?.level ? levelLabels[trustStats.level] || trustStats.level : "—";
 
   if (loading) {
     return (
@@ -182,7 +211,7 @@ export default function DashboardPage() {
             </span>
             <span className="bg-green-500/20 backdrop-blur-sm px-4 py-1.5 rounded-full text-sm border border-green-500/20 flex items-center gap-1">
               <Shield size={14} />
-              امنیت بالا
+              {trustStats ? `امتیاز اعتماد: ${trustStats.currentScore}` : "در حال بارگذاری..."}
             </span>
           </div>
         </div>
@@ -195,7 +224,7 @@ export default function DashboardPage() {
           iconBg="bg-green-100"
           iconColor="text-green-600"
           label="سطح امنیت"
-          value="متوسط"
+          value={trustLabel}
           delay={0.1}
         />
         <StatCard
@@ -215,11 +244,11 @@ export default function DashboardPage() {
           delay={0.3}
         />
         <StatCard
-          icon={<Users size={20} />}
-          iconBg="bg-orange-100"
-          iconColor="text-orange-600"
-          label="دستگاه‌های معتبر"
-          value={sessions.filter(s => s.isTrusted).length || 0}
+          icon={<Key size={20} />}
+          iconBg="bg-amber-100"
+          iconColor="text-amber-600"
+          label="کدهای بازیابی"
+          value={recoveryStatus?.available ?? "—"}
           delay={0.4}
         />
       </div>
@@ -273,6 +302,9 @@ export default function DashboardPage() {
           </motion.div>
         </div>
       </div>
+
+      {/* Login approval history */}
+      <LoginRequestsCard />
 
       {/* Security Actions */}
       <motion.div

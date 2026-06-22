@@ -1,71 +1,49 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import toast from "react-hot-toast";
-import { 
-  LayoutDashboard, 
-  Shield, 
-  Key, 
-  LogOut, 
-  Menu, 
+import {
+  LayoutDashboard,
+  Shield,
+  Key,
+  LogOut,
+  Menu,
   X,
   ChevronLeft,
-  User,
   Smartphone,
-  Bell,
-  Settings
+  Activity,
 } from "lucide-react";
+import { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { useAuth } from "@/contexts/AuthProvider";
 
 export default function DashboardLayout({ children }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { user, loading, isAdmin, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   useEffect(() => {
-    fetchUser();
-  }, []);
-
-  const fetchUser = async () => {
-    try {
-      const res = await fetch("/api/auth/me");
-      if (!res.ok) {
-        router.push("/login");
-        return;
-      }
-      const data = await res.json();
-      setUser(data.data?.user);
-    } catch (error) {
-      console.error(error);
+    if (!loading && !user) {
       router.push("/login");
-    } finally {
-      setLoading(false);
     }
-  };
+  }, [loading, user, router]);
 
   const handleLogout = async () => {
-    try {
-      const res = await fetch("/api/auth/logout", { method: "POST" });
-      if (res.ok) {
-        toast.success("خروج موفقیت‌آمیز بود");
-        router.push("/login");
-      }
-    } catch (error) {
-      toast.error("خطا در خروج");
-    } finally {
-      setShowLogoutModal(false);
-    }
+    setShowLogoutModal(false);
+    await logout();
   };
 
   const menuItems = [
     { name: "داشبورد", href: "/dashboard", icon: LayoutDashboard },
     { name: "امنیت", href: "/dashboard/security", icon: Shield },
+    { name: "دستگاه‌ها", href: "/dashboard/devices", icon: Smartphone },
+    { name: "فعالیت", href: "/dashboard/activity", icon: Activity },
     { name: "کدهای بازیابی", href: "/dashboard/recovery", icon: Key },
+    ...(isAdmin ? [{ name: "پنل ادمین", href: "/admin", icon: Shield }] : []),
   ];
 
   const isActive = (href) => pathname === href;

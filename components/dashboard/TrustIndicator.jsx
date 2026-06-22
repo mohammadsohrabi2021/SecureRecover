@@ -85,14 +85,14 @@ export default function TrustIndicator() {
         description: "نیاز به کد یکبار مصرف"
       },
       LOW: { 
-        color: "orange", 
-        bgColor: "bg-orange-50", 
-        borderColor: "border-orange-200", 
-        textColor: "text-orange-700",
-        badgeColor: "bg-orange-100 text-orange-700",
+        color: "red", 
+        bgColor: "bg-red-50", 
+        borderColor: "border-red-200", 
+        textColor: "text-red-700",
+        badgeColor: "bg-red-100 text-red-700",
         icon: AlertTriangle,
         label: "امنیت پایین",
-        description: "نیاز به کد + کد بازیابی"
+        description: "نیاز به OTP + کد بازیابی"
       },
       CRITICAL: { 
         color: "red", 

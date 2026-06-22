@@ -203,10 +203,22 @@ export default function SessionsList({ sessions, onRevoke, onRevokeAll }) {
                         <Globe size={12} />
                         {session.ip || "نامشخص"}
                       </span>
+                      {session.location?.city && (
+                        <span className="flex items-center gap-1">
+                          <MapPin size={12} />
+                          {session.location.city}
+                          {session.location.country ? `, ${session.location.country}` : ""}
+                        </span>
+                      )}
                       <span className="flex items-center gap-1">
                         <Clock size={12} />
                         {formatDate(session.lastActive)}
                       </span>
+                      {session.expiresAt && (
+                        <span className="flex items-center gap-1 text-amber-600">
+                          انقضا: {formatDate(session.expiresAt)}
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2 mt-2">

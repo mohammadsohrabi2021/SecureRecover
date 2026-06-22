@@ -1,35 +1,31 @@
-// app/api/auth/sessions/route.js
-import { cookies } from "next/headers";
-import { verifyToken } from "@/lib/jwt";
+import { authenticateRequest } from "@/middleware/auth";
 import connectDB from "@/lib/db";
 import Session from "@/models/Session";
+import SecurityLog from "@/models/SecurityLog";
 import { successResponse, errorResponse } from "@/lib/utils/response";
 
-export async function GET(req) {
+export async function GET() {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get("secure_recover_session")?.value;
-    
-    if (!token) {
-      return errorResponse("احراز هویت نشده", 401);
-    }
-    
-    const decoded = verifyToken(token);
-    if (!decoded || !decoded.userId) {
-      return errorResponse("توکن نامعتبر است", 401);
-    }
-    
+    const auth = await authenticateRequest();
+    if (auth.error) return auth.error;
+
     await connectDB();
-    
+
     const sessions = await Session.find({
-      userId: decoded.userId,
-      isValid: true
-    }).sort({ lastActive: -1 });
-    
-    return successResponse("لیست جلسات فعال", { sessions });
-    
+      userId: auth.userId,
+      isValid: true,
+      expiresAt: { $gt: new Date() },
+    })
+      .sort({ lastActive: -1 })
+      .lean();
+
+    const mapped = sessions.map((s) => ({
+      ...s,
+      isCurrent: s.sessionId === auth.sessionId,
+    }));
+
+    return successResponse("لیست جلسات فعال", { sessions: mapped, currentSessionId: auth.sessionId });
   } catch (error) {
-    console.error("GET sessions error:", error);
     return errorResponse(error.message, 500);
   }
 }

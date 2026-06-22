@@ -33,11 +33,7 @@ export default function SecurityPage() {
       const res = await fetch("/api/auth/sessions");
       const data = await res.json();
       if (res.ok) {
-        const sessionsWithCurrent = (data.data?.sessions || []).map(session => ({
-          ...session,
-          isCurrent: checkIfCurrentSession(session)
-        }));
-        setSessions(sessionsWithCurrent);
+        setSessions(data.data?.sessions || []);
       }
     } catch (error) {
       console.error(error);
@@ -46,13 +42,11 @@ export default function SecurityPage() {
     }
   };
 
-  const checkIfCurrentSession = (session) => {
-    // این تابع را بر اساس منطق خودتان تنظیم کنید
-    // مثلاً مقایسه sessionId با سشن فعلی
-    return false;
-  };
-
   const revokeSession = async (session) => {
+    if (session.isCurrent) {
+      toast.error("نمی‌توانید جلسه فعلی را ببندید");
+      return;
+    }
     setRevokingId(session.sessionId);
     try {
       const res = await fetch(`/api/auth/sessions/${session.sessionId}`, { method: "DELETE" });
@@ -61,7 +55,8 @@ export default function SecurityPage() {
         setShowRevokeModal(null);
         fetchSessions();
       } else {
-        toast.error("خطا در بستن جلسه");
+        const data = await res.json();
+        toast.error(data.message || "خطا در بستن جلسه");
       }
     } catch (error) {
       toast.error("خطا در بستن جلسه");
