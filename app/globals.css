@@ -31,3 +31,29 @@ body {
   color: var(--foreground);
   font-family:"YekanBakh", Arial, Helvetica, sans-serif;
 }
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  15%, 45%, 75% { transform: translateX(-6px); }
+  30%, 60%, 90% { transform: translateX(6px); }
+}
+
+@utility animate-shake {
+  animation: shake 0.45s ease-in-out;
+}
+
+@layer base {
+  button:not(:disabled),
+  a[href],
+  [role="button"],
+  input[type="button"],
+  input[type="submit"],
+  label[for] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  input:disabled {
+    cursor: not-allowed;
+  }
+}

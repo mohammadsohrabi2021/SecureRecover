@@ -37,7 +37,7 @@ export default function Button({
         ${variants[variant]}
         ${sizes[size]}
         ${fullWidth ? "w-full" : ""}
-        font-semibold transition-all duration-200
+        font-semibold transition-all duration-200 cursor-pointer
         disabled:opacity-50 disabled:cursor-not-allowed
         ${className}
       `}
